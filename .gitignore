@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+.chroma/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+coverage/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# OS & Build artifacts
+.DS_Store
+*.pdf
+tmp/
+dist/
+
