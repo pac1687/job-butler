@@ -1,31 +1,31 @@
 # Implementation Tasks: Hybrid Cloud-Edge Job Intelligence Engine
 
 ## Phase 1: Cloud Infrastructure & Database Setup
-- [ ] 1.1 Provision a Neon PostgreSQL database and run the schema DDL (including pipeline_leases, master_profiles, tailoring_rules, and purge_stale_job_records()) from SPEC.md.
-- [ ] 1.2 Create a private Cloudflare R2 bucket (job-artifacts) and configure API access keys with Object Read/Write permissions.
-- [ ] 1.3 Create a Google Cloud Console OAuth 2.0 Client ID with redirect URIs:
+- [x] 1.1 Provision a Neon PostgreSQL database and run the schema DDL (including pipeline_leases, master_profiles, tailoring_rules, and purge_stale_job_records()) from SPEC.md.
+- [x] 1.2 Create a private Neon Object Storage bucket (job-artifacts) on your Neon branch and generate storage access keys (storage:read, storage:write).
+- [x] 1.3 Create a Google Cloud Console OAuth 2.0 Client ID with redirect URIs:
   - http://localhost:3000/api/auth/callback/google
   - https://<your-project>.vercel.app/api/auth/callback/google
-- [ ] 1.4 Generate authentication secrets via openssl rand -base64 32 and construct .env.local for web and .env for the worker.
+- [x] 1.4 Generate authentication secrets via openssl rand -base64 32 and construct .env.local for web and .env for the worker.
 
 ## Phase 2: Host LM Studio Setup & Container Foundation
-- [ ] 2.1 Configure LM Studio on the host machine:
+- [x] 2.1 Configure LM Studio on the host machine:
   - Download and load primary model (qwen2.5-7b-instruct or meta-llama-3.1-8b-instruct at Q4_K_M).
   - Open Developer / Local Server tab, set Port to 1234, set context window to 8192, and enable "Serve on Local Network (0.0.0.0)".
   - Verify endpoint access at http://localhost:1234/v1/models.
 - [x] 2.2 Create Dockerfile with multi-arch detection (TARGETARCH) to fetch and install the precompiled Typst binary for arm64 and amd64.
 - [x] 2.3 Create docker-compose.yml defining the worker (batch) and queue-listener (persistent daemon) services with host.docker.internal host-gateway mapping and LM_STUDIO_BASE_URL=http://host.docker.internal:1234/v1.
-- [ ] 2.4 Verify container connectivity: build image and execute test script confirming HTTP access from inside Docker to LM Studio on http://host.docker.internal:1234/v1/models.
+- [x] 2.4 Verify container connectivity: build image and execute test script confirming HTTP access from inside Docker to LM Studio on http://host.docker.internal:1234/v1/models.
 
 ## Phase 3: Core Pipeline & Guardrail Implementation (Inside Docker)
-- [ ] 3.1 Implement pre-flight health check (worker/preflight.py) to verify LM Studio readiness before starting batch tasks.
-- [ ] 3.2 Implement distributed lease coordinator (worker/lease.py) in Neon to prevent multi-machine execution collisions.
-- [ ] 3.3 Implement text cleaning pre-processor (worker/cleaner.py) stripping EEO statements and legal boilerplate from job listings.
-- [ ] 3.4 Implement worker/collector.py:
+- [x] 3.1 Implement pre-flight health check (worker/preflight.py) to verify LM Studio readiness before starting batch tasks.
+- [x] 3.2 Implement distributed lease coordinator (worker/lease.py) in Neon to prevent multi-machine execution collisions.
+- [x] 3.3 Implement text cleaning pre-processor (worker/cleaner.py) stripping EEO statements and legal boilerplate from job listings.
+- [x] 3.4 Implement worker/collector.py:
   - Tier-1 direct API scrapers for Greenhouse (/v1/boards/{board}/jobs), Lever, and Ashby.
   - Tier-2 JobSpy fallback with jittered delays (2-5 seconds) and isolated exception handling.
   - SHA-256 deduplication checking against Neon jobs.content_hash.
-- [ ] 3.5 Implement worker/ranker.py:
+- [x] 3.5 Implement worker/ranker.py:
   - Deterministic negative keyword pruning against negative_title_keywords.
   - ChromaDB vector similarity ranker using BAAI/bge-small-en-v1.5 against positive_titles and profile embeddings.
 - [ ] 3.6 Implement deterministic guardrail module (worker/validator.py):
@@ -77,7 +77,7 @@
   - Visual polling indicator tracking queue resolution.
 
 ## Phase 6: Automated Testing & Verification
-- [ ] 6.1 Implement tests/test_cleaner.py (pytest):
+- [x] 6.1 Implement tests/test_cleaner.py (pytest):
   - Verify regex stripping of EEO statements, benefits packages, and disclosures.
 - [ ] 6.2 Implement tests/test_validator.py (pytest):
   - Test forbidden term denylist regex detection.
@@ -86,7 +86,7 @@
 - [ ] 6.3 Implement tests/test_typesetter.py (pytest):
   - Test headless CLI compilation for resume.typ and cover_letter.typ.
   - Test single-page assertion triggering error when content exceeds 1 page.
-- [ ] 6.4 Implement tests/test_lease.py (pytest):
+- [x] 6.4 Implement tests/test_lease.py (pytest):
   - Test database lease acquisition, renewal, and collision rejection.
 - [ ] 6.5 Implement Next.js route tests (Jest / React Testing Library):
   - Test edge middleware blocking non-admin Google emails.
