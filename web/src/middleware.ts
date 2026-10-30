@@ -3,8 +3,6 @@ import type { NextRequest } from "next/server";
 import { auth } from "@/auth";
 import { evaluateMiddlewareAccess } from "@/lib/auth-guard";
 
-export { evaluateMiddlewareAccess };
-
 export default auth((req: NextRequest & { auth?: { user?: { email?: string | null } } | null }) => {
   const userEmail = req.auth?.user?.email;
   const decision = evaluateMiddlewareAccess(req.nextUrl.pathname, userEmail);

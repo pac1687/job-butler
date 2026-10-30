@@ -14,7 +14,7 @@ jest.mock("next-auth/providers/google", () => ({
 }));
 
 import { isAuthorizedAdminEmail, evaluateMiddlewareAccess } from "@/lib/auth-guard";
-import { handleArtifactPresignRequest } from "@/app/api/artifacts/[id]/route";
+import { handleArtifactPresignRequest } from "@/lib/r2";
 
 describe("Next.js Auth & Artifact Route Security (Task 6.5)", () => {
   const ADMIN_EMAIL = "owner@jobbutler.dev";
