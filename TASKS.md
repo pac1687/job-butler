@@ -13,8 +13,8 @@
   - Download and load primary model (qwen2.5-7b-instruct or meta-llama-3.1-8b-instruct at Q4_K_M).
   - Open Developer / Local Server tab, set Port to 1234, set context window to 8192, and enable "Serve on Local Network (0.0.0.0)".
   - Verify endpoint access at http://localhost:1234/v1/models.
-- [ ] 2.2 Create Dockerfile with multi-arch detection (TARGETARCH) to fetch and install the precompiled Typst binary for arm64 and amd64.
-- [ ] 2.3 Create docker-compose.yml defining the worker (batch) and queue-listener (persistent daemon) services with host.docker.internal host-gateway mapping and LM_STUDIO_BASE_URL=http://host.docker.internal:1234/v1.
+- [x] 2.2 Create Dockerfile with multi-arch detection (TARGETARCH) to fetch and install the precompiled Typst binary for arm64 and amd64.
+- [x] 2.3 Create docker-compose.yml defining the worker (batch) and queue-listener (persistent daemon) services with host.docker.internal host-gateway mapping and LM_STUDIO_BASE_URL=http://host.docker.internal:1234/v1.
 - [ ] 2.4 Verify container connectivity: build image and execute test script confirming HTTP access from inside Docker to LM Studio on http://host.docker.internal:1234/v1/models.
 
 ## Phase 3: Core Pipeline & Guardrail Implementation (Inside Docker)

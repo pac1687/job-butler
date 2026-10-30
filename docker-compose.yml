@@ -1,0 +1,38 @@
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: job-butler-worker:latest
+    container_name: job-pipeline-worker
+    env_file:
+      - .env
+    environment:
+      - LM_STUDIO_BASE_URL=${LM_STUDIO_BASE_URL:-http://host.docker.internal:1234/v1}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    deploy:
+      resources:
+        limits:
+          memory: 2560M
+    command: ["--nightly"]
+
+  queue-listener:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: job-butler-worker:latest
+    container_name: job-queue-listener
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - LM_STUDIO_BASE_URL=${LM_STUDIO_BASE_URL:-http://host.docker.internal:1234/v1}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    deploy:
+      resources:
+        limits:
+          memory: 2560M
+    command: ["--listen-queue"]
+
