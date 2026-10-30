@@ -14,6 +14,7 @@ node_modules/
 .next/
 out/
 coverage/
+next-env.d.ts
 
 # Environment variables
 .env

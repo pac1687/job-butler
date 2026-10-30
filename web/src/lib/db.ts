@@ -1,0 +1,72 @@
+import { neon } from "@neondatabase/serverless";
+
+export type MatchStatus = "NEW_MATCH" | "SAVED" | "APPLIED" | "ARCHIVED";
+
+export interface EvaluatedJobMatch {
+  id: string;
+  job_id: string;
+  title: string;
+  company: string;
+  location: string;
+  is_remote: boolean;
+  url: string;
+  salary_range: string | null;
+  semantic_score: number;
+  fit_score: number;
+  fit_rationale: string;
+  matched_skills: string[];
+  missing_skills: string[];
+  resume_storage_key: string | null;
+  cover_letter_storage_key: string | null;
+  payload_snapshot: Record<string, unknown>;
+  status: MatchStatus;
+  created_at: string;
+}
+
+export interface TailoringRulesRecord {
+  id: number;
+  forbidden_terms: string[];
+  protected_metrics: string[];
+  max_bullets_per_role: number;
+  allow_rephrasing: boolean;
+  lock_company_names: boolean;
+  lock_dates: boolean;
+}
+
+export interface JobPreferencesRecord {
+  id: number;
+  positive_titles: string[];
+  negative_title_keywords: string[];
+  natural_language_notes: string;
+  min_semantic_score: number;
+}
+
+export interface MasterProfileRecord {
+  id: string;
+  basics: Record<string, unknown>;
+  skills: Record<string, string[]>;
+  experience: Array<{
+    role_id: string;
+    company: string;
+    title: string;
+    location: string;
+    dates: string;
+    bullets: string[];
+    tags?: string[];
+  }>;
+  education: Array<{
+    institution: string;
+    degree: string;
+    dates: string;
+  }>;
+  uploaded_at: string;
+}
+
+export function getSql() {
+  const url = process.env.DATABASE_URL;
+  if (!url) {
+    throw new Error("DATABASE_URL is not configured");
+  }
+  return neon(url);
+}
+

@@ -54,25 +54,25 @@
 - [x] 4.2 Test container batch execution headlessly and verify execution logs.
 
 ## Phase 5: Web Application Development (Next.js & Vercel)
-- [ ] 5.1 Initialize Next.js 14+ project with TypeScript, Tailwind CSS, and @neondatabase/serverless.
-- [ ] 5.2 Configure Auth.js (auth.ts, middleware.ts, app/api/auth/[...nextauth]/route.ts) enforcing ALLOWED_ADMIN_EMAIL.
-- [ ] 5.3 Build public demo landing route (app/demo/page.tsx or / fallback) rendering static mock matches for unauthenticated visitors.
-- [ ] 5.4 Build authenticated triage dashboard (app/dashboard/page.tsx):
+- [x] 5.1 Initialize Next.js 14+ project with TypeScript, Tailwind CSS, and @neondatabase/serverless.
+- [x] 5.2 Configure Auth.js (auth.ts, middleware.ts, app/api/auth/[...nextauth]/route.ts) enforcing ALLOWED_ADMIN_EMAIL.
+- [x] 5.3 Build public demo landing route (app/demo/page.tsx or / fallback) rendering static mock matches for unauthenticated visitors.
+- [x] 5.4 Build authenticated triage dashboard (app/dashboard/page.tsx):
   - Feed ordered by fit_score descending.
   - Skill badges, fit rationale, external link, and secure PDF view buttons.
   - Audit Snapshot Modal: view exact JSON payload used to generate that specific resume version.
   - Status mutation actions (SAVED, APPLIED, ARCHIVED).
-- [ ] 5.5 Build presigned URL generator (app/api/artifacts/[id]/route.ts):
+- [x] 5.5 Build presigned URL generator (app/api/artifacts/[id]/route.ts):
   - Server-side route verifying session and generating 15-minute presigned GET URLs from Cloudflare R2.
-- [ ] 5.6 Build Resume & Guardrail Management screen (app/profile/page.tsx):
+- [x] 5.6 Build Resume & Guardrail Management screen (app/profile/page.tsx):
   - File upload component handling PDF/DOCX parsing via pdf-parse/mammoth.
   - Enqueue structured parsing task to job_task_queue.
   - Form controls for forbidden_terms denylist chips and allow_rephrasing toggle.
-- [ ] 5.7 Build preference management page (app/preferences/page.tsx):
+- [x] 5.7 Build preference management page (app/preferences/page.tsx):
   - Interactive tag inputs for positive_titles and negative_title_keywords.
   - Textarea for natural language guidance notes.
   - Server Actions persisting changes to Neon job_preferences.
-- [ ] 5.8 Build on-demand task queue submission:
+- [x] 5.8 Build on-demand task queue submission:
   - URL submission modal writing to job_task_queue.
   - Visual polling indicator tracking queue resolution.
 
@@ -88,7 +88,7 @@
   - Test single-page assertion triggering error when content exceeds 1 page.
 - [x] 6.4 Implement tests/test_lease.py (pytest):
   - Test database lease acquisition, renewal, and collision rejection.
-- [ ] 6.5 Implement Next.js route tests (Jest / React Testing Library):
+- [x] 6.5 Implement Next.js route tests (Jest / React Testing Library):
   - Test edge middleware blocking non-admin Google emails.
   - Test presigned URL generation rejection for unauthenticated users.
 
