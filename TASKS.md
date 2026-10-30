@@ -28,24 +28,24 @@
 - [x] 3.5 Implement worker/ranker.py:
   - Deterministic negative keyword pruning against negative_title_keywords.
   - ChromaDB vector similarity ranker using BAAI/bge-small-en-v1.5 against positive_titles and profile embeddings.
-- [ ] 3.6 Implement deterministic guardrail module (worker/validator.py):
+- [x] 3.6 Implement deterministic guardrail module (worker/validator.py):
   - Forbidden terms word boundary regex check.
   - Numerical metric entity extraction and subset comparison.
   - Cosine semantic similarity drift check (< 0.82 threshold).
   - Verbatim source bullet fallback mechanism.
-- [ ] 3.7 Implement worker/synthesizer.py:
+- [x] 3.7 Implement worker/synthesizer.py:
   - Structured evaluation via LM Studio using the OpenAI Python SDK.
   - Nearest-neighbor extractive bullet selection from master_profiles.
   - Constrained keyword rephrasing prompt enforcing forbidden terms denylist and 170-character cap.
   - 3-paragraph evidence-based cover letter prompt.
-- [ ] 3.8 Create Typst typesetting templates & compiler (worker/typesetter.py):
+- [x] 3.8 Create Typst typesetting templates & compiler (worker/typesetter.py):
   - templates/resume.typ binding external JSON via --input data=...
   - templates/cover_letter.typ.
   - Single-page PDF validation assertion using pypdf.
-- [ ] 3.9 Implement worker/publisher.py:
+- [x] 3.9 Implement worker/publisher.py:
   - Boto3 client uploading compiled PDFs and payload_snapshot.json to private Cloudflare R2 bucket.
   - Transactional SQL commit to Neon jobs and evaluated_matches.
-- [ ] 3.10 Implement worker/main.py supporting --nightly execution (with lease handling and retention purge) and --listen-queue polling with FOR UPDATE SKIP LOCKED.
+- [x] 3.10 Implement worker/main.py supporting --nightly execution (with lease handling and retention purge) and --listen-queue polling with FOR UPDATE SKIP LOCKED.
 
 ## Phase 4: Workstation Scheduling & Wake Automation
 - [ ] 4.1 Configure OS-specific schedulers:
@@ -79,11 +79,11 @@
 ## Phase 6: Automated Testing & Verification
 - [x] 6.1 Implement tests/test_cleaner.py (pytest):
   - Verify regex stripping of EEO statements, benefits packages, and disclosures.
-- [ ] 6.2 Implement tests/test_validator.py (pytest):
+- [x] 6.2 Implement tests/test_validator.py (pytest):
   - Test forbidden term denylist regex detection.
   - Test numerical entity mutation rejection (e.g., source has 20%, output has 35%).
   - Test fallback to verbatim bullet when cosine similarity < 0.82.
-- [ ] 6.3 Implement tests/test_typesetter.py (pytest):
+- [x] 6.3 Implement tests/test_typesetter.py (pytest):
   - Test headless CLI compilation for resume.typ and cover_letter.typ.
   - Test single-page assertion triggering error when content exceeds 1 page.
 - [x] 6.4 Implement tests/test_lease.py (pytest):
