@@ -81,9 +81,16 @@ class ArtifactPublisher:
         cover_key = f"{prefix}/cover_letter.pdf"
         snapshot_key = f"{prefix}/payload_snapshot.json"
 
-        if not self.config.r2_endpoint_url or not self.config.r2_access_key_id:
-            logger.info(
-                "R2 credentials not configured; recording logical artifact keys under %s",
+        endpoint = (self.config.r2_endpoint_url or "").strip()
+        is_valid_endpoint = (
+            endpoint.startswith("https://")
+            and "<" not in endpoint
+            and ">" not in endpoint
+        )
+        if not is_valid_endpoint or not self.config.r2_access_key_id:
+            logger.warning(
+                "S3/R2 endpoint '%s' is unconfigured or contains a placeholder; skipping S3 upload and recording logical keys under %s",
+                endpoint,
                 prefix,
             )
             return {

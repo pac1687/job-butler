@@ -6,8 +6,9 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Type
 from openai import OpenAI
+from pydantic import BaseModel, Field
 
 from worker.config import WorkerConfig
 from worker.ranker import SemanticRanker, cosine_similarity
@@ -23,8 +24,12 @@ logger = logging.getLogger(__name__)
 
 
 def _extract_json_object(raw_content: str) -> Dict[str, Any]:
-    """Safely extracts a JSON object from an LLM response that may include markdown fences."""
+    """Safely extracts a JSON object from an LLM response that may include <think> blocks or markdown fences."""
     cleaned = (raw_content or "").strip()
+    # Strip <think>...</think> reasoning traces emitted by Qwen3 / DeepSeek-R1 models
+    cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL).strip()
+    if "</think>" in cleaned:
+        cleaned = cleaned.split("</think>", 1)[-1].strip()
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
         cleaned = re.sub(r"\s*```$", "", cleaned)
@@ -33,6 +38,10 @@ def _extract_json_object(raw_content: str) -> Dict[str, Any]:
     if start != -1 and end != -1 and end > start:
         cleaned = cleaned[start : end + 1]
     return json.loads(cleaned)
+
+
+class SingleBulletResponse(BaseModel):
+    bullet: str = Field(..., max_length=170)
 
 
 class JobSynthesizer:
@@ -49,6 +58,8 @@ class JobSynthesizer:
         self.client = openai_client or OpenAI(
             base_url=self.config.lm_studio_base_url,
             api_key=self.config.lm_studio_api_key,
+            timeout=120.0,
+            max_retries=2,
         )
         self.ranker = ranker or SemanticRanker(self.config.embedding_model_name)
         self.validator = validator or GuardrailValidator(
@@ -56,16 +67,37 @@ class JobSynthesizer:
             max_bullet_chars=self.config.bullet_max_chars,
         )
 
-    def _chat_json(self, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
-        """Executes a low-temperature JSON completion against LM Studio."""
-        completion = self.client.chat.completions.create(
-            model=self.config.lm_studio_model,
-            temperature=self.config.llm_temperature,
-            messages=[
+    def _chat_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 800,
+        schema_model: Optional[Type[BaseModel]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Executes a bounded low-temperature JSON completion using LM Studio's
+        Pydantic JSON Schema grammar constraint (FR-2.4) to bypass <think> blocks.
+        """
+        kwargs: Dict[str, Any] = {
+            "model": self.config.lm_studio_model,
+            "temperature": self.config.llm_temperature,
+            "max_tokens": max_tokens,
+            "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+            "messages": [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                {"role": "user", "content": f"{user_prompt}\n/no_think"},
             ],
-        )
+        }
+        if schema_model is not None:
+            kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": schema_model.__name__,
+                    "strict": True,
+                    "schema": schema_model.model_json_schema(),
+                },
+            }
+        completion = self.client.chat.completions.create(**kwargs)
         content = completion.choices[0].message.content or "{}"
         return _extract_json_object(content)
 
@@ -95,7 +127,12 @@ class JobSynthesizer:
             }
         )
         try:
-            data = self._chat_json(system_prompt, user_prompt)
+            data = self._chat_json(
+                system_prompt,
+                user_prompt,
+                max_tokens=500,
+                schema_model=JobEvaluationResult,
+            )
             return JobEvaluationResult.model_validate(data)
         except Exception as exc:
             logger.warning("LLM evaluation fallback triggered for %s: %s", job.title, exc)
@@ -170,7 +207,12 @@ class JobSynthesizer:
             }
         )
         try:
-            data = self._chat_json(system_prompt, user_prompt)
+            data = self._chat_json(
+                system_prompt,
+                user_prompt,
+                max_tokens=150,
+                schema_model=SingleBulletResponse,
+            )
             candidate = str(data.get("bullet") or source_bullet).strip()
         except Exception as exc:
             logger.warning("Bullet rephrase LLM call failed; keeping verbatim bullet: %s", exc)
@@ -209,7 +251,12 @@ class JobSynthesizer:
             }
         )
         try:
-            data = self._chat_json(system_prompt, user_prompt)
+            data = self._chat_json(
+                system_prompt,
+                user_prompt,
+                max_tokens=700,
+                schema_model=CoverLetterResponse,
+            )
             parsed = CoverLetterResponse.model_validate(data)
             return parsed.paragraphs
         except Exception as exc:
@@ -306,6 +353,11 @@ class JobSynthesizer:
             "and education (list of {institution, degree, dates}). "
             "Preserve all bullets and metrics verbatim."
         )
-        data = self._chat_json(system_prompt, raw_resume_text[:10000])
+        data = self._chat_json(
+            system_prompt,
+            raw_resume_text[:10000],
+            max_tokens=2000,
+            schema_model=ParsedMasterProfile,
+        )
         return ParsedMasterProfile.model_validate(data)
 

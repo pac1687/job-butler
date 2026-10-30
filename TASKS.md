@@ -48,10 +48,10 @@
 - [x] 3.10 Implement worker/main.py supporting --nightly execution (with lease handling and retention purge) and --listen-queue polling with FOR UPDATE SKIP LOCKED.
 
 ## Phase 4: Workstation Scheduling & Wake Automation
-- [ ] 4.1 Configure OS-specific schedulers:
+- [x] 4.1 Configure OS-specific schedulers:
   - macOS: Configure sudo pmset repeat wake MTWRF 02:00:00 and create ~/Library/LaunchAgents/com.user.jobpipeline.plist triggering docker compose run --rm worker.
   - Windows: Create PowerShell setup script registering a Task Scheduler job running docker compose run --rm worker at 02:00 AM.
-- [ ] 4.2 Test container batch execution headlessly and verify execution logs.
+- [x] 4.2 Test container batch execution headlessly and verify execution logs.
 
 ## Phase 5: Web Application Development (Next.js & Vercel)
 - [ ] 5.1 Initialize Next.js 14+ project with TypeScript, Tailwind CSS, and @neondatabase/serverless.

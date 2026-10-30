@@ -15,6 +15,7 @@ services:
       - ./worker:/app/worker
       - ./templates:/app/templates
       - ./tests:/app/tests
+      - hf_cache:/home/butler/.cache/huggingface
     deploy:
       resources:
         limits:
@@ -38,9 +39,14 @@ services:
       - ./worker:/app/worker
       - ./templates:/app/templates
       - ./tests:/app/tests
+      - hf_cache:/home/butler/.cache/huggingface
     deploy:
       resources:
         limits:
           memory: 2560M
     command: ["--listen-queue"]
+
+volumes:
+  hf_cache:
+
 

@@ -116,11 +116,13 @@ def process_single_job(
     publisher: ArtifactPublisher,
 ) -> str:
     """Evaluates, tailors, compiles single-page PDFs, uploads to R2, and persists a single job."""
+    logger.info("1/4 Evaluating job fit via LM Studio for '%s' at '%s'...", job.title, job.company)
     evaluation = synthesizer.evaluate_job_fit(
         job=job,
         master_profile=state["master_profile"],
         natural_language_notes=state["preferences"].get("natural_language_notes", ""),
     )
+    logger.info("2/4 Tailoring resume bullets and cover letter (fit_score=%.1f)...", evaluation.fit_score)
     payload_snapshot = synthesizer.build_tailored_payload(
         job=job,
         master_profile=state["master_profile"],
@@ -130,6 +132,7 @@ def process_single_job(
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir)
+        logger.info("3/4 Compiling single-page Typst PDFs...")
         resume_pdf = typesetter.compile_resume_with_auto_trim(
             payload_snapshot, tmp_path / "resume.pdf"
         )
@@ -139,6 +142,7 @@ def process_single_job(
             tmp_path / "cover_letter.pdf",
             enforce_single_page=True,
         )
+        logger.info("4/4 Uploading artifacts to S3 and persisting match to Neon...")
         storage_keys = publisher.upload_artifacts_to_r2(
             job_content_hash=job.content_hash,
             resume_pdf_path=resume_pdf,
