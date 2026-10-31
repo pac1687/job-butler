@@ -7,6 +7,7 @@ ARG TYPST_VERSION=0.12.0
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    HF_HOME="/tmp/huggingface" \
     LM_STUDIO_BASE_URL="http://host.docker.internal:1234/v1"
 
 WORKDIR /app

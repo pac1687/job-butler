@@ -139,11 +139,8 @@ def process_single_job(
         resume_pdf = typesetter.compile_resume_with_auto_trim(
             payload_snapshot, tmp_path / "resume.pdf"
         )
-        cover_pdf = typesetter.compile_template(
-            "cover_letter.typ",
-            payload_snapshot,
-            tmp_path / "cover_letter.pdf",
-            enforce_single_page=True,
+        cover_pdf = typesetter.compile_cover_letter_with_auto_trim(
+            payload_snapshot, tmp_path / "cover_letter.pdf"
         )
         logger.info("4/4 Uploading artifacts to S3 and persisting match to Neon...")
         storage_keys = publisher.upload_artifacts_to_r2(
@@ -164,52 +161,69 @@ def process_single_job(
     )
 
 
-def run_nightly_batch(config: WorkerConfig) -> None:
-    """Executes the scheduled nightly batch with pre-flight check, distributed lease, and retention purge."""
-    enforce_preflight_or_exit(config.lm_studio_base_url)
+def run_nightly_batch(config: WorkerConfig, max_jobs: int = 5) -> None:
+    """
+    Executes the batch job discovery & tailoring pipeline with pre-flight check,
+    distributed lease, retention purge, and short-lived DB connections.
+    """
+    if not check_lm_studio_health(config.lm_studio_base_url):
+        logger.warning("LM Studio is offline; skipping discovery batch.")
+        return
 
     with psycopg.connect(config.database_url) as conn:
         lease = LeaseCoordinator(conn, worker_id=config.worker_node_id)
         if not lease.acquire_lease("nightly_batch", ttl_minutes=120):
             return
+        lease.run_retention_purge()
+        state = _load_pipeline_state(conn)
 
-        try:
-            lease.run_retention_purge()
-            state = _load_pipeline_state(conn)
+    try:
+        collector = JobCollector()
+        ranker = SemanticRanker(config.embedding_model_name)
+        synthesizer = JobSynthesizer(config=config, ranker=ranker)
+        typesetter = TypstTypesetter()
+        publisher = ArtifactPublisher(config=config)
 
-            collector = JobCollector()
-            ranker = SemanticRanker(config.embedding_model_name)
-            synthesizer = JobSynthesizer(config=config, ranker=ranker)
-            typesetter = TypstTypesetter()
-            publisher = ArtifactPublisher(config=config)
+        ats_boards = {
+            "greenhouse": ["vercel", "supabase", "cloudflare"],
+            "lever": ["linear"],
+            "ashby": ["ramp"],
+        }
+        logger.info("Scraping Tier-1 ATS boards (%s)...", ats_boards)
+        scraped = collector.collect_all(
+            ats_boards=ats_boards,
+            positive_titles=state["preferences"]["positive_titles"],
+            existing_hashes=state["existing_hashes"],
+        )
+        profile_summary = json.dumps(state["master_profile"].get("basics", {}))
+        ranked = ranker.filter_and_rank(
+            jobs=scraped,
+            positive_titles=state["preferences"]["positive_titles"],
+            negative_keywords=state["preferences"]["negative_title_keywords"],
+            profile_summary_text=profile_summary,
+            min_semantic_score=state["preferences"]["min_semantic_score"],
+        )
 
-            ats_boards = {
-                "greenhouse": ["vercel", "supabase", "cloudflare"],
-                "lever": ["linear"],
-                "ashby": ["ramp"],
-            }
-            scraped = collector.collect_all(
-                ats_boards=ats_boards,
-                positive_titles=state["preferences"]["positive_titles"],
-                existing_hashes=state["existing_hashes"],
-            )
-            profile_summary = json.dumps(state["master_profile"].get("basics", {}))
-            ranked = ranker.filter_and_rank(
-                jobs=scraped,
-                positive_titles=state["preferences"]["positive_titles"],
-                negative_keywords=state["preferences"]["negative_title_keywords"],
-                profile_summary_text=profile_summary,
-                min_semantic_score=state["preferences"]["min_semantic_score"],
-            )
-
+        top_candidates = ranked[:max_jobs]
+        logger.info(
+            "Discovery batch scraped %d new jobs; %d passed semantic filter (>= %.2f). Processing top %d matches...",
+            len(scraped),
+            len(ranked),
+            state["preferences"]["min_semantic_score"],
+            len(top_candidates),
+        )
+        for idx, (job, sem_score) in enumerate(top_candidates, start=1):
             logger.info(
-                "Nightly batch scraped %d unique jobs; %d passed semantic filter.",
-                len(scraped),
-                len(ranked),
+                "[Batch %d/%d] Tailoring '%s' at '%s' (semantic_score=%.2f)...",
+                idx,
+                len(top_candidates),
+                job.title,
+                job.company,
+                sem_score,
             )
-            for job, sem_score in ranked:
+            with psycopg.connect(config.database_url) as job_conn:
                 process_single_job(
-                    conn=conn,
+                    conn=job_conn,
                     job=job,
                     semantic_score=sem_score,
                     state=state,
@@ -217,29 +231,34 @@ def run_nightly_batch(config: WorkerConfig) -> None:
                     typesetter=typesetter,
                     publisher=publisher,
                 )
-        finally:
-            lease.release_lease("nightly_batch")
+    finally:
+        with psycopg.connect(config.database_url) as conn:
+            LeaseCoordinator(conn, worker_id=config.worker_node_id).release_lease(
+                "nightly_batch"
+            )
 
 
-def poll_task_queue_once(conn: Any, config: WorkerConfig) -> bool:
+def poll_task_queue_once(config: WorkerConfig) -> bool:
     """
     Claims and processes at most one pending task from `job_task_queue` using
     `SELECT ... FOR UPDATE SKIP LOCKED` for multi-node concurrency safety.
-    Returns True if a task was processed, False if queue was empty.
+    Uses short-lived DB connections so Neon's pooler never drops an idle SSL connection
+    during local LLM inference.
     """
-    with conn.cursor() as cur:
-        cur.execute(CLAIM_NEXT_TASK_SQL)
-        row = cur.fetchone()
-        if not row:
-            conn.commit()
-            return False
+    with psycopg.connect(config.database_url) as conn:
+        with conn.cursor() as cur:
+            cur.execute(CLAIM_NEXT_TASK_SQL)
+            row = cur.fetchone()
+            if not row:
+                conn.commit()
+                return False
 
-        task_id, job_id, task_type, payload = row[0], row[1], row[2], row[3] or {}
-        cur.execute(
-            "UPDATE job_task_queue SET status = 'PROCESSING', updated_at = NOW() WHERE id = %s;",
-            (task_id,),
-        )
-    conn.commit()
+            task_id, job_id, task_type, payload = row[0], row[1], row[2], row[3] or {}
+            cur.execute(
+                "UPDATE job_task_queue SET status = 'PROCESSING', updated_at = NOW() WHERE id = %s;",
+                (task_id,),
+            )
+        conn.commit()
 
     logger.info("Processing task %s (type=%s)", task_id, task_type)
     try:
@@ -262,76 +281,125 @@ def poll_task_queue_once(conn: Any, config: WorkerConfig) -> bool:
                 ).strip()
             if not raw_text:
                 raise ValueError("Uploaded resume contained no extractable text.")
+
+            logger.info("Sending resume text (%d chars) to LM Studio (%s)...", len(raw_text), config.lm_studio_model)
             parsed = synthesizer.parse_master_resume_text(raw_text)
-            with conn.cursor() as cur:
-                cur.execute("UPDATE master_profiles SET is_active = FALSE WHERE is_active = TRUE;")
-                cur.execute(
-                    """
-                    INSERT INTO master_profiles (is_active, basics, skills, experience, education)
-                    VALUES (TRUE, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb);
-                    """,
-                    (
-                        json.dumps(parsed.basics.model_dump()),
-                        json.dumps(parsed.skills.model_dump()),
-                        json.dumps([r.model_dump() for r in parsed.experience]),
-                        json.dumps([e.model_dump() for e in parsed.education]),
-                    ),
-                )
+
+            with psycopg.connect(config.database_url) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE master_profiles SET is_active = FALSE WHERE is_active = TRUE;")
+                    cur.execute(
+                        """
+                        INSERT INTO master_profiles (is_active, basics, skills, experience, education)
+                        VALUES (TRUE, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb);
+                        """,
+                        (
+                            json.dumps(parsed.basics.model_dump()),
+                            json.dumps(parsed.skills.model_dump()),
+                            json.dumps([r.model_dump() for r in parsed.experience]),
+                            json.dumps([e.model_dump() for e in parsed.education]),
+                        ),
+                    )
+                    cur.execute(
+                        "UPDATE job_task_queue SET status = 'COMPLETED', error_message = NULL, updated_at = NOW() WHERE id = %s;",
+                        (task_id,),
+                    )
+                conn.commit()
 
         elif task_type in ("EVALUATE_URL", "REGENERATE_RESUME", "REWRITE_COVER_LETTER"):
-            state = _load_pipeline_state(conn)
-            target_url = str(payload.get("url") or "")
-            job = collector.fetch_single_url(target_url) if target_url else None
-            if job is None and job_id:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT source, source_id, title, company, location, is_remote, url, content_hash, description_text, salary_range FROM jobs WHERE id = %s;",
-                        (job_id,),
-                    )
-                    jrow = cur.fetchone()
-                    if jrow:
-                        job = ScrapedJob(
-                            source=jrow[0],
-                            source_id=jrow[1],
-                            title=jrow[2],
-                            company=jrow[3],
-                            location=jrow[4],
-                            is_remote=jrow[5],
-                            url=jrow[6],
-                            content_hash=jrow[7].strip(),
-                            description_text=jrow[8],
-                            salary_range=jrow[9],
+            if payload.get("mode") == "BATCH_DISCOVERY":
+                max_jobs = int(payload.get("max_jobs") or 5)
+                run_nightly_batch(config, max_jobs=max_jobs)
+                with psycopg.connect(config.database_url) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE job_task_queue SET status = 'COMPLETED', error_message = NULL, updated_at = NOW() WHERE id = %s;",
+                            (task_id,),
                         )
-            if job is None:
-                raise ValueError("Unable to resolve job record or scrape URL for task.")
+                    conn.commit()
+            else:
+                with psycopg.connect(config.database_url) as conn:
+                    state = _load_pipeline_state(conn)
+                    target_url = str(payload.get("url") or "")
+                    job = collector.fetch_single_url(target_url) if target_url else None
+                    if job is None and job_id:
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                "SELECT source, source_id, title, company, location, is_remote, url, content_hash, description_text, salary_range FROM jobs WHERE id = %s;",
+                                (job_id,),
+                            )
+                            jrow = cur.fetchone()
+                            if jrow:
+                                job = ScrapedJob(
+                                    source=jrow[0],
+                                    source_id=jrow[1],
+                                    title=jrow[2],
+                                    company=jrow[3],
+                                    location=jrow[4],
+                                    is_remote=jrow[5],
+                                    url=jrow[6],
+                                    content_hash=jrow[7].strip(),
+                                    description_text=jrow[8],
+                                    salary_range=jrow[9],
+                                )
+                    if job is None:
+                        raise ValueError("Unable to resolve job record or scrape URL for task.")
 
-            process_single_job(
-                conn=conn,
-                job=job,
-                semantic_score=0.85,
-                state=state,
-                synthesizer=synthesizer,
-                typesetter=typesetter,
-                publisher=publisher,
-            )
+                # Run LLM evaluation, tailoring, and Typst compilation outside the DB transaction
+                evaluation = synthesizer.evaluate_job_fit(
+                    job=job,
+                    master_profile=state["master_profile"],
+                    natural_language_notes=state["preferences"].get("natural_language_notes", ""),
+                )
+                payload_snapshot = synthesizer.build_tailored_payload(
+                    job=job,
+                    master_profile=state["master_profile"],
+                    tailoring_rules=state["tailoring_rules"],
+                    evaluation=evaluation,
+                )
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    tmp_path = Path(tmp_dir)
+                    resume_pdf = typesetter.compile_resume_with_auto_trim(
+                        payload_snapshot, tmp_path / "resume.pdf"
+                    )
+                    cover_pdf = typesetter.compile_cover_letter_with_auto_trim(
+                        payload_snapshot, tmp_path / "cover_letter.pdf"
+                    )
+                    storage_keys = publisher.upload_artifacts_to_r2(
+                        job_content_hash=job.content_hash,
+                        resume_pdf_path=resume_pdf,
+                        cover_letter_pdf_path=cover_pdf,
+                        payload_snapshot=payload_snapshot,
+                    )
 
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE job_task_queue SET status = 'COMPLETED', error_message = NULL, updated_at = NOW() WHERE id = %s;",
-                (task_id,),
-            )
-        conn.commit()
+                with psycopg.connect(config.database_url) as conn:
+                    publisher.persist_evaluated_match(
+                        conn=conn,
+                        job=job,
+                        semantic_score=0.85,
+                        evaluation=evaluation,
+                        resume_storage_key=storage_keys.get("resume_storage_key"),
+                        cover_letter_storage_key=storage_keys.get("cover_letter_storage_key"),
+                        payload_snapshot=payload_snapshot,
+                    )
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE job_task_queue SET status = 'COMPLETED', error_message = NULL, updated_at = NOW() WHERE id = %s;",
+                            (task_id,),
+                        )
+                    conn.commit()
+
         logger.info("Task %s completed successfully.", task_id)
 
     except Exception as exc:
-        conn.rollback()
         logger.error("Task %s failed: %s", task_id, exc)
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE job_task_queue SET status = 'FAILED', error_message = %s, updated_at = NOW() WHERE id = %s;",
-                (str(exc)[:500], task_id),
-            )
-        conn.commit()
+        with psycopg.connect(config.database_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE job_task_queue SET status = 'FAILED', error_message = %s, updated_at = NOW() WHERE id = %s;",
+                    (str(exc)[:500], task_id),
+                )
+            conn.commit()
 
     return True
 
@@ -346,9 +414,8 @@ def run_queue_listener(config: WorkerConfig) -> None:
     )
     while True:
         try:
-            with psycopg.connect(config.database_url) as conn:
-                while poll_task_queue_once(conn, config):
-                    pass
+            while poll_task_queue_once(config):
+                pass
         except Exception as exc:
             logger.warning("Queue poll cycle encountered an error: %s", exc)
         time.sleep(config.queue_poll_interval_seconds)

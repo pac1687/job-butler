@@ -8,6 +8,7 @@ interface JobMatchFeedProps {
   readOnly?: boolean;
   onUpdateStatus?: (matchId: string, status: MatchStatus) => Promise<void>;
   onEnqueueUrl?: (url: string) => Promise<void>;
+  onRunBatchDiscovery?: () => Promise<void>;
 }
 
 const STATUS_OPTIONS: MatchStatus[] = ["NEW_MATCH", "SAVED", "APPLIED", "ARCHIVED"];
@@ -17,6 +18,7 @@ export function JobMatchFeed({
   readOnly = false,
   onUpdateStatus,
   onEnqueueUrl,
+  onRunBatchDiscovery,
 }: JobMatchFeedProps) {
   const [matches, setMatches] = useState<EvaluatedJobMatch[]>(initialMatches);
   const [activeFilter, setActiveFilter] = useState<string>("ALL");
@@ -24,6 +26,8 @@ export function JobMatchFeed({
   const [showQueueModal, setShowQueueModal] = useState(false);
   const [customUrl, setCustomUrl] = useState("");
   const [queueMessage, setQueueMessage] = useState<string | null>(null);
+  const [discoveryNotice, setDiscoveryNotice] = useState<string | null>(null);
+  const [runningDiscovery, setRunningDiscovery] = useState(false);
   const [loadingArtifactId, setLoadingArtifactId] = useState<string | null>(null);
 
   const filteredMatches = matches.filter((m) =>
@@ -81,6 +85,31 @@ export function JobMatchFeed({
     );
   }
 
+  async function handleRunBatchDiscovery() {
+    if (readOnly) return;
+    try {
+      setRunningDiscovery(true);
+      setDiscoveryNotice("Enqueuing batch job discovery scrape...");
+      if (onRunBatchDiscovery) {
+        await onRunBatchDiscovery();
+      } else {
+        await fetch("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            task_type: "EVALUATE_URL",
+            payload: { mode: "BATCH_DISCOVERY", max_jobs: 5 },
+          }),
+        });
+      }
+      setDiscoveryNotice(
+        "Discovery scrape queued! Your local queue-listener will fetch, rank, score, and tailor the top matching roles on its next 10s poll."
+      );
+    } finally {
+      setRunningDiscovery(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
       {/* Top Controls Bar */}
@@ -102,17 +131,38 @@ export function JobMatchFeed({
         </div>
 
         {!readOnly && (
-          <button
-            onClick={() => {
-              setQueueMessage(null);
-              setShowQueueModal(true);
-            }}
-            className="px-3.5 py-2 rounded-lg text-xs font-semibold bg-indigo-500 text-white hover:bg-indigo-400 transition"
-          >
-            + Submit Job URL to Worker Queue
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={handleRunBatchDiscovery}
+              disabled={runningDiscovery}
+              className="px-3.5 py-2 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-50 transition"
+            >
+              {runningDiscovery ? "Queuing Scrape..." : "🔄 Run Discovery Scrape Now"}
+            </button>
+            <button
+              onClick={() => {
+                setQueueMessage(null);
+                setShowQueueModal(true);
+              }}
+              className="px-3.5 py-2 rounded-lg text-xs font-semibold bg-indigo-500 text-white hover:bg-indigo-400 transition"
+            >
+              + Submit Job URL to Worker Queue
+            </button>
+          </div>
         )}
       </div>
+
+      {discoveryNotice && (
+        <div className="bg-emerald-950/60 border border-emerald-800/80 text-emerald-300 rounded-xl px-4 py-3 text-xs flex items-center justify-between gap-3">
+          <span>{discoveryNotice}</span>
+          <button
+            onClick={() => setDiscoveryNotice(null)}
+            className="text-emerald-400 hover:text-white font-semibold"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Feed Cards */}
       {filteredMatches.length === 0 ? (

@@ -58,8 +58,8 @@ class JobSynthesizer:
         self.client = openai_client or OpenAI(
             base_url=self.config.lm_studio_base_url,
             api_key=self.config.lm_studio_api_key,
-            timeout=120.0,
-            max_retries=2,
+            timeout=300.0,
+            max_retries=0,
         )
         self.ranker = ranker or SemanticRanker(self.config.embedding_model_name)
         self.validator = validator or GuardrailValidator(
@@ -75,13 +75,15 @@ class JobSynthesizer:
         schema_model: Optional[Type[BaseModel]] = None,
     ) -> Dict[str, Any]:
         """
-        Executes a bounded low-temperature JSON completion using LM Studio's
+        Executes a streaming low-temperature JSON completion using LM Studio's
         Pydantic JSON Schema grammar constraint (FR-2.4).
+        Streaming prevents read timeouts during long local LLM generations.
         """
         kwargs: Dict[str, Any] = {
             "model": self.config.lm_studio_model,
             "temperature": self.config.llm_temperature,
             "max_tokens": max_tokens,
+            "stream": True,
             "extra_body": {
                 "reasoning_effort": "none",
                 "chat_template_kwargs": {"enable_thinking": False},
@@ -103,19 +105,25 @@ class JobSynthesizer:
                     "schema": schema_model.model_json_schema(),
                 },
             }
-        completion = self.client.chat.completions.create(**kwargs)
-        msg = completion.choices[0].message
-        content = (msg.content or "").strip()
-        if not content:
-            # Fallback if LM Studio placed output inside reasoning_content
-            extra = getattr(msg, "model_extra", {}) or {}
-            reasoning = getattr(msg, "reasoning_content", None) or extra.get("reasoning_content") or ""
-            logger.warning(
-                "LM Studio returned empty message.content (finish_reason=%s, reasoning_len=%d). Consider disabling Thinking in LM Studio settings.",
-                completion.choices[0].finish_reason,
-                len(reasoning),
-            )
-            content = str(reasoning)
+
+        stream = self.client.chat.completions.create(**kwargs)
+        content_chunks: List[str] = []
+        reasoning_chunks: List[str] = []
+
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if getattr(delta, "content", None):
+                content_chunks.append(delta.content)
+            extra = getattr(delta, "model_extra", {}) or {}
+            r_text = getattr(delta, "reasoning_content", None) or extra.get("reasoning_content")
+            if r_text:
+                reasoning_chunks.append(str(r_text))
+
+        content = "".join(content_chunks).strip()
+        if not content and reasoning_chunks:
+            content = "".join(reasoning_chunks).strip()
         return _extract_json_object(content or "{}")
 
     def evaluate_job_fit(

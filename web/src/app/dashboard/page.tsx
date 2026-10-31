@@ -4,7 +4,11 @@ import { Navbar } from "@/components/Navbar";
 import { JobMatchFeed } from "@/components/JobMatchFeed";
 import { getSql, type EvaluatedJobMatch } from "@/lib/db";
 import { DEMO_MATCHES } from "@/lib/mock-data";
-import { enqueueJobUrlAction, updateMatchStatusAction } from "./actions";
+import {
+  enqueueBatchDiscoveryAction,
+  enqueueJobUrlAction,
+  updateMatchStatusAction,
+} from "./actions";
 
 async function fetchDashboardMatches(): Promise<EvaluatedJobMatch[]> {
   if (!process.env.DATABASE_URL) {
@@ -74,6 +78,7 @@ export default async function DashboardPage() {
           readOnly={false}
           onUpdateStatus={updateMatchStatusAction}
           onEnqueueUrl={enqueueJobUrlAction}
+          onRunBatchDiscovery={enqueueBatchDiscoveryAction}
         />
       </main>
     </div>

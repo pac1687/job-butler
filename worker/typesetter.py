@@ -103,11 +103,13 @@ class TypstTypesetter:
         output_pdf_path: Path | str,
     ) -> Path:
         """
-        Compiles `resume.typ` and, if `PageBudgetExceededError` occurs, progressively trims
-        the trailing bullet from roles until the document fits on a single page (FR-2.6).
+        Compiles `resume.typ` and, if `PageBudgetExceededError` occurs, progressively adjusts
+        compact layout density and trims trailing bullets from older roles until the document
+        fits on a single page (FR-2.6).
         """
         working_payload = json.loads(json.dumps(payload))
-        for attempt in range(4):
+        max_attempts = 16
+        for attempt in range(max_attempts):
             try:
                 return self.compile_template(
                     "resume.typ",
@@ -116,16 +118,53 @@ class TypstTypesetter:
                     enforce_single_page=True,
                 )
             except PageBudgetExceededError:
-                if attempt == 3:
+                if attempt == max_attempts - 1:
                     raise
                 logger.warning(
-                    "Resume exceeded 1 page on attempt %d; trimming trailing bullets to fit page budget.",
+                    "Resume exceeded 1 page on attempt %d; adjusting layout/bullets to fit 1-page budget.",
                     attempt + 1,
                 )
+                # Step 1: First trim one trailing bullet from the oldest role with >1 bullet
+                trimmed_bullet = False
                 for role in reversed(working_payload.get("experience", [])):
                     bullets = role.get("bullets") or []
                     if len(bullets) > 1:
                         role["bullets"] = bullets[:-1]
+                        trimmed_bullet = True
                         break
+
+                # Step 2: Escalate compact_level (tighter font & margins) as attempts progress
+                current_compact = int(working_payload.get("compact_level") or 0)
+                if attempt >= 1 and current_compact < 2:
+                    working_payload["compact_level"] = current_compact + 1
+
+                # Step 3: If all roles are down to 1 bullet and still >1 page, drop oldest role or trim summary
+                if not trimmed_bullet:
+                    roles = working_payload.get("experience", [])
+                    if len(roles) > 2:
+                        working_payload["experience"] = roles[:-1]
+                    elif working_payload.get("basics", {}).get("summary"):
+                        working_payload["basics"]["summary"] = ""
+        return Path(output_pdf_path)
+
+    def compile_cover_letter_with_auto_trim(
+        self,
+        payload: Dict[str, Any],
+        output_pdf_path: Path | str,
+    ) -> Path:
+        """Compiles `cover_letter.typ` and switches to compact margins/font if it exceeds 1 page."""
+        working_payload = json.loads(json.dumps(payload))
+        for attempt in range(3):
+            try:
+                return self.compile_template(
+                    "cover_letter.typ",
+                    working_payload,
+                    output_pdf_path,
+                    enforce_single_page=True,
+                )
+            except PageBudgetExceededError:
+                if attempt == 2:
+                    raise
+                working_payload["compact_level"] = attempt + 1
         return Path(output_pdf_path)
 

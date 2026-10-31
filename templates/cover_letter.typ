@@ -11,15 +11,20 @@
 #let basics = payload.at("basics", default: (:))
 #let target = payload.at("target_job", default: (:))
 #let paragraphs = payload.at("cover_letter_paragraphs", default: ())
+#let compact = payload.at("compact_level", default: 0)
 
 #set page(
   paper: "us-letter",
-  margin: (top: 0.75in, bottom: 0.75in, left: 0.85in, right: 0.85in),
+  margin: if compact >= 1 {
+    (top: 0.55in, bottom: 0.55in, left: 0.7in, right: 0.7in)
+  } else {
+    (top: 0.75in, bottom: 0.75in, left: 0.85in, right: 0.85in)
+  },
 )
 
 #set text(
   font: ("Liberation Sans", "DejaVu Sans", "Helvetica", "Arial"),
-  size: 10.5pt,
+  size: if compact >= 1 { 9.5pt } else { 10.5pt },
   fill: rgb("#111827"),
 )
 

@@ -208,14 +208,31 @@ class JobCollector:
             cleaned = clean_job_description(resp.text)
             if not cleaned:
                 return None
-            # Attempt basic title extraction
+            # Extract title and company from page <title> or ATS URL structure
             title = "Submitted Opportunity"
             if "<title>" in resp.text.lower():
                 start = resp.text.lower().find("<title>") + 7
                 end = resp.text.lower().find("</title>", start)
                 if end > start:
                     title = resp.text[start:end].strip()[:120]
-            company = target_url.split("/")[2].replace("www.", "")
+
+            url_parts = [p for p in target_url.split("/") if p]
+            host = url_parts[1].replace("www.", "") if len(url_parts) > 1 else "Company"
+            company = host
+
+            if " @ " in title:
+                role_part, comp_part = title.rsplit(" @ ", 1)
+                title = role_part.strip()
+                company = comp_part.split("|")[0].split("-")[0].strip()
+            elif " at " in title:
+                role_part, comp_part = title.rsplit(" at ", 1)
+                title = role_part.strip()
+                company = comp_part.split("|")[0].split("-")[0].strip()
+            elif any(
+                ats in host
+                for ats in ("ashbyhq.com", "greenhouse.io", "lever.co")
+            ) and len(url_parts) > 2:
+                company = url_parts[2].replace("-", " ").title()
             content_hash = compute_content_hash(title, company, cleaned)
             return ScrapedJob(
                 source="on_demand_url",
