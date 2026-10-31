@@ -93,7 +93,7 @@
   - Test presigned URL generation rejection for unauthenticated users.
 
 ## Phase 7: Deployment & Production Smoke Checks
-- [ ] 7.1 Deploy Next.js web application to Vercel with production environment variables (DATABASE_URL, AUTH_SECRET, AUTH_GOOGLE_ID, AUTH_GOOGLE_SECRET, ALLOWED_ADMIN_EMAIL, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY).
+- [x] 7.1 Deploy Next.js web application to Vercel with production environment variables (DATABASE_URL, AUTH_SECRET, AUTH_GOOGLE_ID, AUTH_GOOGLE_SECRET, ALLOWED_ADMIN_EMAIL, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY).
 - [ ] 7.2 Run end-to-end production verification:
   - Upload a baseline resume, verify parsing.
   - Trigger ad-hoc job tailoring.

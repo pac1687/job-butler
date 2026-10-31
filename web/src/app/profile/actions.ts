@@ -19,11 +19,21 @@ export async function uploadAndEnqueueMasterResumeAction(formData: FormData) {
   const buffer = Buffer.from(arrayBuffer);
   const fileName = file.name.toLowerCase();
   let extractedText = "";
+  let fileBase64: string | null = null;
 
   if (fileName.endsWith(".pdf")) {
-    const pdfParse = (await import("pdf-parse")).default;
-    const parsed = await pdfParse(buffer);
-    extractedText = parsed.text;
+    try {
+      const pdfParse = (await import("pdf-parse")).default;
+      const parsed = await pdfParse(buffer);
+      extractedText = (parsed.text || "").trim();
+    } catch (err) {
+      // pdf-parse uses legacy pdf.js v1.10.100 which can throw "bad XRef entry" on modern PDFs;
+      // fall back to sending base64 bytes so the Python worker extracts text via pypdf v5+.
+      console.warn("pdf-parse failed, delegating PDF extraction to worker pypdf:", err);
+    }
+    if (!extractedText) {
+      fileBase64 = buffer.toString("base64");
+    }
   } else if (fileName.endsWith(".docx")) {
     const mammoth = await import("mammoth");
     const result = await mammoth.extractRawText({ buffer });
@@ -37,7 +47,11 @@ export async function uploadAndEnqueueMasterResumeAction(formData: FormData) {
     INSERT INTO job_task_queue (task_type, payload, status)
     VALUES (
       'PARSE_MASTER_RESUME',
-      ${JSON.stringify({ filename: file.name, raw_text: extractedText })}::jsonb,
+      ${JSON.stringify({
+        filename: file.name,
+        raw_text: extractedText,
+        file_base64: fileBase64,
+      })}::jsonb,
       'PENDING'
     )
   `;
@@ -101,4 +115,3 @@ export async function saveMasterProfileDirectAction(profile: {
   `;
   revalidatePath("/profile");
 }
-

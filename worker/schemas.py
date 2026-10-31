@@ -84,13 +84,30 @@ class ParsedEducationEntry(BaseModel):
     dates: str
 
 
+class ParsedBasics(BaseModel):
+    name: str = ""
+    title: str = ""
+    email: str = ""
+    phone: str = ""
+    location: str = "Remote"
+    links: List[str] = Field(default_factory=list)
+    summary: str = ""
+
+
+class ParsedSkills(BaseModel):
+    languages: List[str] = Field(default_factory=list)
+    frameworks: List[str] = Field(default_factory=list)
+    cloud: List[str] = Field(default_factory=list)
+    databases: List[str] = Field(default_factory=list)
+
+
 class ParsedMasterProfile(BaseModel):
     """Schema used when parsing uploaded raw PDF/DOCX text into master_profiles."""
 
-    basics: Dict[str, object]
-    skills: Dict[str, List[str]]
-    experience: List[ParsedRoleEntry]
-    education: List[ParsedEducationEntry]
+    basics: ParsedBasics = Field(default_factory=ParsedBasics)
+    skills: ParsedSkills = Field(default_factory=ParsedSkills)
+    experience: List[ParsedRoleEntry] = Field(default_factory=list)
+    education: List[ParsedEducationEntry] = Field(default_factory=list)
 
 
 class ScrapedJob(BaseModel):

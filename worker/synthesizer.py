@@ -71,20 +71,26 @@ class JobSynthesizer:
         self,
         system_prompt: str,
         user_prompt: str,
-        max_tokens: int = 800,
+        max_tokens: int = 4096,
         schema_model: Optional[Type[BaseModel]] = None,
     ) -> Dict[str, Any]:
         """
         Executes a bounded low-temperature JSON completion using LM Studio's
-        Pydantic JSON Schema grammar constraint (FR-2.4) to bypass <think> blocks.
+        Pydantic JSON Schema grammar constraint (FR-2.4).
         """
         kwargs: Dict[str, Any] = {
             "model": self.config.lm_studio_model,
             "temperature": self.config.llm_temperature,
             "max_tokens": max_tokens,
-            "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+            "extra_body": {
+                "reasoning_effort": "none",
+                "chat_template_kwargs": {"enable_thinking": False},
+            },
             "messages": [
-                {"role": "system", "content": system_prompt},
+                {
+                    "role": "system",
+                    "content": f"{system_prompt}\nRespond directly with raw JSON only. Do not output thinking or reasoning steps.",
+                },
                 {"role": "user", "content": f"{user_prompt}\n/no_think"},
             ],
         }
@@ -93,13 +99,24 @@ class JobSynthesizer:
                 "type": "json_schema",
                 "json_schema": {
                     "name": schema_model.__name__,
-                    "strict": True,
+                    "strict": False,
                     "schema": schema_model.model_json_schema(),
                 },
             }
         completion = self.client.chat.completions.create(**kwargs)
-        content = completion.choices[0].message.content or "{}"
-        return _extract_json_object(content)
+        msg = completion.choices[0].message
+        content = (msg.content or "").strip()
+        if not content:
+            # Fallback if LM Studio placed output inside reasoning_content
+            extra = getattr(msg, "model_extra", {}) or {}
+            reasoning = getattr(msg, "reasoning_content", None) or extra.get("reasoning_content") or ""
+            logger.warning(
+                "LM Studio returned empty message.content (finish_reason=%s, reasoning_len=%d). Consider disabling Thinking in LM Studio settings.",
+                completion.choices[0].finish_reason,
+                len(reasoning),
+            )
+            content = str(reasoning)
+        return _extract_json_object(content or "{}")
 
     def evaluate_job_fit(
         self,
@@ -130,7 +147,7 @@ class JobSynthesizer:
             data = self._chat_json(
                 system_prompt,
                 user_prompt,
-                max_tokens=500,
+                max_tokens=3072,
                 schema_model=JobEvaluationResult,
             )
             return JobEvaluationResult.model_validate(data)
@@ -210,7 +227,7 @@ class JobSynthesizer:
             data = self._chat_json(
                 system_prompt,
                 user_prompt,
-                max_tokens=150,
+                max_tokens=2048,
                 schema_model=SingleBulletResponse,
             )
             candidate = str(data.get("bullet") or source_bullet).strip()
@@ -254,7 +271,7 @@ class JobSynthesizer:
             data = self._chat_json(
                 system_prompt,
                 user_prompt,
-                max_tokens=700,
+                max_tokens=3072,
                 schema_model=CoverLetterResponse,
             )
             parsed = CoverLetterResponse.model_validate(data)
@@ -356,7 +373,7 @@ class JobSynthesizer:
         data = self._chat_json(
             system_prompt,
             raw_resume_text[:10000],
-            max_tokens=2000,
+            max_tokens=4096,
             schema_model=ParsedMasterProfile,
         )
         return ParsedMasterProfile.model_validate(data)

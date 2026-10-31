@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import io
 import json
 import logging
 import tempfile
@@ -10,6 +12,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Set
 import psycopg
+from pypdf import PdfReader
 
 from worker.collector import JobCollector
 from worker.config import WorkerConfig
@@ -249,7 +252,16 @@ def poll_task_queue_once(conn: Any, config: WorkerConfig) -> bool:
         collector = JobCollector()
 
         if task_type == "PARSE_MASTER_RESUME":
-            raw_text = str(payload.get("raw_text") or "")
+            raw_text = str(payload.get("raw_text") or "").strip()
+            file_b64 = payload.get("file_base64")
+            if not raw_text and file_b64:
+                pdf_bytes = base64.b64decode(file_b64)
+                reader = PdfReader(io.BytesIO(pdf_bytes), strict=False)
+                raw_text = "\n".join(
+                    (page.extract_text() or "") for page in reader.pages
+                ).strip()
+            if not raw_text:
+                raise ValueError("Uploaded resume contained no extractable text.")
             parsed = synthesizer.parse_master_resume_text(raw_text)
             with conn.cursor() as cur:
                 cur.execute("UPDATE master_profiles SET is_active = FALSE WHERE is_active = TRUE;")
@@ -259,8 +271,8 @@ def poll_task_queue_once(conn: Any, config: WorkerConfig) -> bool:
                     VALUES (TRUE, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb);
                     """,
                     (
-                        json.dumps(parsed.basics),
-                        json.dumps(parsed.skills),
+                        json.dumps(parsed.basics.model_dump()),
+                        json.dumps(parsed.skills.model_dump()),
                         json.dumps([r.model_dump() for r in parsed.experience]),
                         json.dumps([e.model_dump() for e in parsed.education]),
                     ),
@@ -327,8 +339,9 @@ def poll_task_queue_once(conn: Any, config: WorkerConfig) -> bool:
 def run_queue_listener(config: WorkerConfig) -> None:
     """Persistent daemon loop polling `job_task_queue` with `FOR UPDATE SKIP LOCKED`."""
     logger.info(
-        "Starting queue listener on node '%s' (poll interval=%ds)...",
+        "Starting queue listener on node '%s' (model='%s', poll interval=%ds)...",
         config.worker_node_id,
+        config.lm_studio_model,
         config.queue_poll_interval_seconds,
     )
     while True:
