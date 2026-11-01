@@ -186,9 +186,9 @@ def run_nightly_batch(config: WorkerConfig, max_jobs: Optional[int] = None) -> N
         publisher = ArtifactPublisher(config=config)
 
         ats_boards = {
-            "greenhouse": ["vercel", "supabase", "cloudflare"],
-            "lever": ["linear"],
-            "ashby": ["ramp"],
+            "greenhouse": ["vercel", "cloudflare", "stripe"],
+            "lever": [],
+            "ashby": ["ramp", "linear", "supabase"],
         }
         logger.info("Scraping Tier-1 ATS boards (%s)...", ats_boards)
         scraped = collector.collect_all(

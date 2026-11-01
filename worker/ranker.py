@@ -66,7 +66,12 @@ class SemanticRanker:
             from sentence_transformers import SentenceTransformer
 
             self._model = SentenceTransformer(self.model_name)
-        embeddings = self._model.encode(texts, normalize_embeddings=True)
+        embeddings = self._model.encode(
+            texts,
+            batch_size=32,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )
         return [vec.tolist() for vec in embeddings]
 
     def score_job(
@@ -108,16 +113,76 @@ class SemanticRanker:
         min_semantic_score: float = 0.70,
     ) -> List[Tuple[ScrapedJob, float]]:
         """
-        Prunes negative titles, computes semantic scores, filters by `min_semantic_score`,
+        Prunes negative titles, computes batched semantic scores, filters by `min_semantic_score`,
         and sorts descending.
         """
         candidates = prune_negative_titles(jobs, negative_keywords)
-        scored: List[Tuple[ScrapedJob, float]] = []
+        if not candidates:
+            return []
 
-        for job in candidates:
-            score = self.score_job(job, positive_titles, profile_summary_text)
-            if score >= min_semantic_score:
-                scored.append((job, score))
+        # Fast lexical pre-filter for large multi-department company boards (e.g. 500+ Cloudflare roles)
+        anchors = [t.strip() for t in positive_titles if t and t.strip()]
+        if len(candidates) > 40 and anchors:
+            anchor_tokens = {
+                tok.lower()
+                for title in anchors
+                for tok in re.findall(r"[a-zA-Z0-9+#]{3,}", title)
+            } | {
+                "engineer",
+                "engineering",
+                "developer",
+                "software",
+                "fullstack",
+                "frontend",
+                "backend",
+                "platform",
+                "systems",
+                "architect",
+                "data",
+                "machine",
+                "learning",
+                "cloud",
+                "devops",
+                "sre",
+                "security",
+                "technical",
+            }
+            narrowed = [
+                job
+                for job in candidates
+                if any(
+                    tok.lower() in anchor_tokens
+                    for tok in re.findall(r"[a-zA-Z0-9+#]{3,}", job.title)
+                )
+            ]
+            if narrowed:
+                logger.info(
+                    "Title pre-filter narrowed %d scraped jobs to %d technical/matching candidates before vector embedding.",
+                    len(candidates),
+                    len(narrowed),
+                )
+                candidates = narrowed
+
+        effective_anchors = anchors or [candidates[0].title]
+        profile_text = profile_summary_text or candidates[0].title
+        job_texts = [f"{job.title}\n{job.description_text[:1200]}" for job in candidates]
+
+        logger.info("Computing BGE vector embeddings for %d candidate jobs...", len(candidates))
+        all_vectors = self.embed_texts([profile_text, *effective_anchors, *job_texts])
+        profile_vec = all_vectors[0]
+        anchor_vecs = all_vectors[1 : 1 + len(effective_anchors)]
+        job_vecs = all_vectors[1 + len(effective_anchors) :]
+
+        scored: List[Tuple[ScrapedJob, float]] = []
+        for job, job_vec in zip(candidates, job_vecs):
+            profile_sim = max(0.0, cosine_similarity(job_vec, profile_vec))
+            best_title_sim = max(
+                (max(0.0, cosine_similarity(job_vec, a_vec)) for a_vec in anchor_vecs),
+                default=profile_sim,
+            )
+            combined = min(1.0, max(0.0, round((0.60 * profile_sim) + (0.40 * best_title_sim), 2)))
+            if combined >= min_semantic_score:
+                scored.append((job, combined))
 
         scored.sort(key=lambda pair: pair[1], reverse=True)
         return scored
