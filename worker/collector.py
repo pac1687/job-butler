@@ -59,6 +59,41 @@ EXCLUDED_TIER2_COMPANIES = {
 }
 
 
+def consolidate_search_queries(titles: List[str], max_queries: int = 8) -> List[str]:
+    """
+    Deduplicates overlapping search titles into distinct root search queries so HTTP scrapers
+    (especially LinkedIn) don't fire redundant requests for substring variations
+    (e.g. 'Solutions Engineer' already covers 'Product Solutions Engineer' and 'AI Solutions Engineer'),
+    while the semantic ranker still scores against all full user titles.
+    """
+    cleaned = [re.sub(r"\s*\([^)]*\)", "", t).strip() for t in titles if t and t.strip()]
+    if len(cleaned) <= max_queries:
+        return cleaned
+
+    # Sort shortest (broadest) first so broad root queries subsume narrower prefixes
+    by_length = sorted(cleaned, key=len)
+    roots: List[str] = []
+    for candidate in by_length:
+        cand_lower = candidate.lower()
+        cand_tokens = set(re.findall(r"[a-z0-9]{3,}", cand_lower))
+        if any(
+            root.lower() in cand_lower
+            or len(cand_tokens & set(re.findall(r"[a-z0-9]{3,}", root.lower()))) >= 2
+            for root in roots
+        ):
+            continue
+        roots.append(candidate)
+
+    # Preserve original user ordering for the selected root queries, then top up to max_queries
+    selected = [t for t in cleaned if t in roots]
+    for t in cleaned:
+        if len(selected) >= max_queries:
+            break
+        if t not in selected:
+            selected.append(t)
+    return selected[:max_queries]
+
+
 class JobCollector:
     """Fetches, cleans, and deduplicates job listings across Tier-1 ATS APIs and Tier-2 JobSpy."""
 
@@ -332,7 +367,7 @@ class JobCollector:
         collected: List[ScrapedJob] = []
 
         for term in search_terms:
-            self.sleep_fn(random.uniform(1.8, 3.2))
+            self.sleep_fn(random.uniform(2.5, 4.2))
             params: Dict[str, str] = {
                 "keywords": term,
                 "location": location,
@@ -379,6 +414,8 @@ class JobCollector:
                             if loc_el
                             else ("Remote" if is_remote else location)
                         )
+                        if is_remote and "remote" not in loc_str.lower():
+                            loc_str = f"{loc_str} (Remote)"
                         raw_href = str(link_el.get("href") or "").split("?")[0].strip() if link_el else ""
                         urn = str(card.get("data-entity-urn") or "")
                         job_id_match = re.search(r"(\d{7,12})", urn or raw_href)
@@ -566,17 +603,20 @@ class JobCollector:
                 raw_jobs.extend(self.fetch_ashby_board(board))
 
         if enable_tier2 and positive_titles:
-            titles_to_query = [t.strip() for t in positive_titles if t and t.strip()]
-            per_title_limit = 15 if len(titles_to_query) > 6 else 25
+            all_titles = [t.strip() for t in positive_titles if t and t.strip()]
+            linkedin_queries = consolidate_search_queries(all_titles, max_queries=7)
+            indeed_queries = consolidate_search_queries(all_titles, max_queries=10)
+            per_title_limit = 15 if len(indeed_queries) > 6 else 25
             if allow_remote:
                 logger.info(
-                    "Running Tier-2 Indeed + LinkedIn (f_WT=2 Remote) + Remotive discovery across all %d titles=%s...",
-                    len(titles_to_query),
-                    titles_to_query,
+                    "Running Tier-2 Indeed (%d queries) + LinkedIn (%d root queries, f_WT=2 Remote) + Remotive discovery (covering all %d target titles)...",
+                    len(indeed_queries),
+                    len(linkedin_queries),
+                    len(all_titles),
                 )
                 raw_jobs.extend(
                     self.fetch_tier2_jobspy(
-                        titles_to_query,
+                        indeed_queries,
                         location="United States",
                         is_remote=True,
                         results_wanted=per_title_limit,
@@ -584,7 +624,7 @@ class JobCollector:
                 )
                 raw_jobs.extend(
                     self.fetch_linkedin_guest_jobs(
-                        titles_to_query,
+                        linkedin_queries,
                         location="United States",
                         is_remote=True,
                     )
@@ -593,14 +633,13 @@ class JobCollector:
             if preferred_locations:
                 for local_area in preferred_locations[:3]:
                     logger.info(
-                        "Running Tier-2 Indeed + LinkedIn 50-mile metro discovery across all %d titles=%s around '%s'...",
-                        len(titles_to_query),
-                        titles_to_query,
+                        "Running Tier-2 Indeed + LinkedIn 50-mile metro discovery around '%s' (%d root queries)...",
                         local_area,
+                        len(linkedin_queries),
                     )
                     raw_jobs.extend(
                         self.fetch_tier2_jobspy(
-                            titles_to_query,
+                            indeed_queries,
                             location=local_area,
                             is_remote=False,
                             results_wanted=per_title_limit,
@@ -609,7 +648,7 @@ class JobCollector:
                     )
                     raw_jobs.extend(
                         self.fetch_linkedin_guest_jobs(
-                            titles_to_query,
+                            linkedin_queries,
                             location=local_area,
                             is_remote=False,
                             distance=50,

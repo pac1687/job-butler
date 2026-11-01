@@ -258,7 +258,7 @@ def process_single_job(
 
 
 def discover_and_score_single_job(
-    conn: Any,
+    database_url: str,
     job: ScrapedJob,
     semantic_score: float,
     state: Dict[str, Any],
@@ -266,8 +266,8 @@ def discover_and_score_single_job(
     publisher: ArtifactPublisher,
 ) -> str:
     """
-    Stage 1 (Fast Discovery): Evaluates job fit via LM Studio and persists the match to Neon
-    without compiling Resume/Cover Letter PDFs yet. User can select which matches to tailor in a batch.
+    Stage 1 (Fast Discovery): Evaluates job fit via LM Studio (with NO database connection held open)
+    and then opens a short-lived connection to persist the match to Neon.
     """
     logger.info(
         "Evaluating job fit via LM Studio for '%s' at '%s' (%s)...",
@@ -280,6 +280,16 @@ def discover_and_score_single_job(
         master_profile=state["master_profile"],
         natural_language_notes=state["preferences"].get("natural_language_notes", ""),
     )
+    with psycopg.connect(database_url) as job_conn:
+        match_id = publisher.persist_evaluated_match(
+            conn=job_conn,
+            job=job,
+            semantic_score=semantic_score,
+            evaluation=evaluation,
+            resume_storage_key=None,
+            cover_letter_storage_key=None,
+            payload_snapshot={"status": "PENDING_TAILORING"},
+        )
     logger.info(
         "Saved match '%s' at '%s' (fit_score=%.1f, semantic_score=%.2f) — ready for on-demand PDF tailoring.",
         job.title,
@@ -287,15 +297,7 @@ def discover_and_score_single_job(
         evaluation.fit_score,
         semantic_score,
     )
-    return publisher.persist_evaluated_match(
-        conn=conn,
-        job=job,
-        semantic_score=semantic_score,
-        evaluation=evaluation,
-        resume_storage_key=None,
-        cover_letter_storage_key=None,
-        payload_snapshot={"status": "PENDING_TAILORING"},
-    )
+    return match_id
 
 
 def run_nightly_batch(config: WorkerConfig, max_jobs: Optional[int] = None) -> None:
@@ -365,26 +367,35 @@ def run_nightly_batch(config: WorkerConfig, max_jobs: Optional[int] = None) -> N
             effective_max_jobs,
         )
         for idx, (job, sem_score) in enumerate(top_candidates, start=1):
-            if job.source == "linkedin":
-                job = collector.hydrate_linkedin_description(job)
-            logger.info(
-                "[Discovery %d/%d] Scoring '%s' at '%s' (%s, source=%s, semantic_score=%.2f)...",
-                idx,
-                len(top_candidates),
-                job.title,
-                job.company,
-                job.location,
-                job.source,
-                sem_score,
-            )
-            with psycopg.connect(config.database_url) as job_conn:
+            try:
+                if job.source == "linkedin":
+                    job = collector.hydrate_linkedin_description(job)
+                logger.info(
+                    "[Discovery %d/%d] Scoring '%s' at '%s' (%s, source=%s, semantic_score=%.2f)...",
+                    idx,
+                    len(top_candidates),
+                    job.title,
+                    job.company,
+                    job.location,
+                    job.source,
+                    sem_score,
+                )
                 discover_and_score_single_job(
-                    conn=job_conn,
+                    database_url=config.database_url,
                     job=job,
                     semantic_score=sem_score,
                     state=state,
                     synthesizer=synthesizer,
                     publisher=publisher,
+                )
+            except Exception as job_exc:
+                logger.error(
+                    "[Discovery %d/%d] Failed scoring/saving '%s' at '%s': %s",
+                    idx,
+                    len(top_candidates),
+                    job.title,
+                    job.company,
+                    job_exc,
                 )
     finally:
         with psycopg.connect(config.database_url) as conn:
