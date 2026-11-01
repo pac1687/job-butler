@@ -65,14 +65,39 @@ def is_eligible_remote_or_local(
 
     cleaned_locs = [loc.strip() for loc in preferred_locations if loc and loc.strip()]
 
-    # 1. Check explicit local area match first
+    # 1. Check explicit local area / metro / state match first
     for target_loc in cleaned_locs:
-        # Match full location string or individual city/state tokens (>= 2 chars)
-        if target_loc.lower() in loc_lower:
+        target_lower = target_loc.lower()
+        if target_lower in loc_lower:
             return True
         parts = [p.strip() for p in target_loc.split(",") if p.strip()]
-        if parts and parts[0].lower() in loc_lower and len(parts[0]) >= 3:
+        city_part = parts[0].lower() if parts else ""
+        state_part = parts[1].strip().split()[0].upper() if len(parts) > 1 else ""
+        if city_part and len(city_part) >= 3 and city_part in loc_lower:
             return True
+        # Match state abbreviation (e.g., ", MO") and Kansas City bi-state metro cities when in Lee's Summit / KC
+        if state_part and len(state_part) == 2:
+            if re.search(rf",\s*{re.escape(state_part)}\b", loc_text, re.IGNORECASE):
+                return True
+        if any(kc in target_lower for kc in ("lee's summit", "lees summit", "kansas city", "overland park")):
+            if any(
+                metro in loc_lower
+                for metro in (
+                    "kansas city",
+                    "overland park",
+                    "lee's summit",
+                    "lees summit",
+                    "olathe",
+                    "lenexa",
+                    "leawood",
+                    "shawnee",
+                    "independence",
+                    "north kansas city",
+                    "mission, ks",
+                    "prairie village",
+                )
+            ):
+                return True
 
     # 2. Check remote eligibility
     is_marked_remote = (

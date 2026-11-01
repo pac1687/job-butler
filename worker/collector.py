@@ -183,11 +183,13 @@ class JobCollector:
         location: str = "United States",
         is_remote: bool = True,
         results_wanted: int = 25,
+        distance: int = 50,
         max_retries: int = 2,
     ) -> List[ScrapedJob]:
         """
-        Tier-2 Aggregator Discovery using JobSpy with exponential backoff and jittered delays (2-5s).
-        Focuses on smaller/mid-sized employers by filtering out mega-cap tech and staffing spam farms.
+        Tier-2 Aggregator Discovery using JobSpy (Indeed batch GraphQL with 50-mile metro radius)
+        with exponential backoff and jittered delays (1.5-3.5s).
+        Avoids LinkedIn unproxied scraping which ignores `is_remote` and triggers HTTP 429 blocks.
         """
         try:
             from jobspy import scrape_jobs  # type: ignore
@@ -197,19 +199,19 @@ class JobCollector:
 
         collected: List[ScrapedJob] = []
         for term in search_terms:
-            # Jittered delay between 2 and 5 seconds per FR-2.2
-            jitter = random.uniform(2.0, 5.0)
+            jitter = random.uniform(1.5, 3.5)
             self.sleep_fn(jitter)
 
             for attempt in range(max_retries):
                 try:
                     df = scrape_jobs(
-                        site_name=["indeed", "linkedin"],
+                        site_name=["indeed"],
                         search_term=term,
                         location=location,
+                        distance=distance,
+                        country_indeed="USA",
                         results_wanted=results_wanted,
                         is_remote=is_remote,
-                        linkedin_fetch_description=True,
                     )
                     if df is not None and not df.empty:
                         for _, row in df.iterrows():
@@ -240,7 +242,7 @@ class JobCollector:
                             content_hash = compute_content_hash(title, company, cleaned)
                             collected.append(
                                 ScrapedJob(
-                                    source=str(row.get("site") or "jobspy"),
+                                    source=str(row.get("site") or "indeed"),
                                     source_id=str(row.get("id") or content_hash[:16]),
                                     title=title,
                                     company=company,
@@ -253,7 +255,7 @@ class JobCollector:
                             )
                     break
                 except Exception as exc:
-                    backoff = (2 ** attempt) + random.uniform(2.0, 5.0)
+                    backoff = (2 ** attempt) + random.uniform(2.0, 4.0)
                     logger.warning(
                         "Tier-2 JobSpy attempt %d failed for '%s': %s (backoff=%.1fs)",
                         attempt + 1,
@@ -264,6 +266,44 @@ class JobCollector:
                     self.sleep_fn(backoff)
 
         return collected
+
+    def fetch_remotive_remote_jobs(self, limit: int = 50) -> List[ScrapedJob]:
+        """Fetches remote startup/mid-sized software roles from the Remotive public API."""
+        url = f"https://remotive.com/api/remote-jobs?category=software-dev&limit={limit}"
+        jobs: List[ScrapedJob] = []
+        try:
+            resp = self.client.get(url)
+            resp.raise_for_status()
+            payload = resp.json()
+            for item in payload.get("jobs", []):
+                title = str(item.get("title") or "").strip()
+                company = str(item.get("company_name") or "Unknown").strip()
+                if not title or company.lower() in EXCLUDED_TIER2_COMPANIES:
+                    continue
+                location = str(item.get("candidate_required_location") or "Remote").strip()
+                raw_desc = str(item.get("description") or "")
+                cleaned = clean_job_description(raw_desc)
+                if not cleaned:
+                    continue
+                salary = str(item.get("salary") or "").strip() or None
+                content_hash = compute_content_hash(title, company, cleaned)
+                jobs.append(
+                    ScrapedJob(
+                        source="remotive",
+                        source_id=str(item.get("id") or content_hash[:16]),
+                        title=title,
+                        company=company,
+                        location=location,
+                        is_remote=True,
+                        url=str(item.get("url") or url),
+                        content_hash=content_hash,
+                        description_text=cleaned,
+                        salary_range=salary,
+                    )
+                )
+        except Exception as exc:
+            logger.warning("Remotive remote jobs fetch failed: %s", exc)
+        return jobs
 
     def fetch_single_url(self, target_url: str) -> Optional[ScrapedJob]:
         """Scrapes an arbitrary job posting URL submitted via the on-demand task queue."""
@@ -358,7 +398,7 @@ class JobCollector:
             titles_to_query = positive_titles[:4]
             if allow_remote:
                 logger.info(
-                    "Running Tier-2 JobSpy remote discovery for titles=%s (location='United States', is_remote=True)...",
+                    "Running Tier-2 Indeed + Remotive remote discovery for titles=%s (location='United States', is_remote=True)...",
                     titles_to_query,
                 )
                 raw_jobs.extend(
@@ -369,19 +409,21 @@ class JobCollector:
                         results_wanted=25,
                     )
                 )
+                raw_jobs.extend(self.fetch_remotive_remote_jobs(limit=50))
             if preferred_locations:
                 for local_area in preferred_locations[:2]:
                     logger.info(
-                        "Running Tier-2 JobSpy local area discovery for titles=%s in '%s'...",
-                        titles_to_query[:2],
+                        "Running Tier-2 Indeed 50-mile metro discovery for titles=%s around '%s'...",
+                        titles_to_query,
                         local_area,
                     )
                     raw_jobs.extend(
                         self.fetch_tier2_jobspy(
-                            titles_to_query[:2],
+                            titles_to_query,
                             location=local_area,
                             is_remote=False,
                             results_wanted=20,
+                            distance=50,
                         )
                     )
 
