@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import time
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set
+from bs4 import BeautifulSoup
 import httpx
 
 from worker.cleaner import clean_job_description, compute_content_hash
@@ -305,6 +307,175 @@ class JobCollector:
             logger.warning("Remotive remote jobs fetch failed: %s", exc)
         return jobs
 
+    def fetch_linkedin_guest_jobs(
+        self,
+        search_terms: List[str],
+        location: str = "United States",
+        is_remote: bool = True,
+        distance: int = 50,
+        max_retries: int = 2,
+    ) -> List[ScrapedJob]:
+        """
+        Two-stage rate-limit-safe LinkedIn Guest Search scraper (Stage 1: Search Cards).
+        Makes 1 lightweight search request per title using LinkedIn's native `f_WT=2` (Remote)
+        and `f_TPR=r604800` (Past 7 days) filters without hammering individual job pages.
+        Full descriptions are lazily hydrated via `hydrate_linkedin_description` only for top matches.
+        """
+        search_url = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
+        browser_headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        collected: List[ScrapedJob] = []
+
+        for term in search_terms:
+            self.sleep_fn(random.uniform(1.8, 3.2))
+            params: Dict[str, str] = {
+                "keywords": term,
+                "location": location,
+                "f_TPR": "r604800",  # Past 7 days
+                "start": "0",
+            }
+            if is_remote:
+                params["f_WT"] = "2"  # LinkedIn native Remote workplace filter
+            else:
+                params["distance"] = str(distance)
+
+            for attempt in range(max_retries):
+                try:
+                    resp = self.client.get(search_url, params=params, headers=browser_headers)
+                    if resp.status_code == 429:
+                        cooldown = (3 ** attempt) + random.uniform(4.0, 7.0)
+                        logger.warning(
+                            "LinkedIn search rate-limited (429) for '%s'; cooling down %.1fs...",
+                            term,
+                            cooldown,
+                        )
+                        self.sleep_fn(cooldown)
+                        continue
+                    resp.raise_for_status()
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    cards = soup.find_all("div", class_=re.compile(r"base-search-card|base-card"))
+                    for card in cards:
+                        title_el = card.find("h3", class_=re.compile(r"base-search-card__title"))
+                        comp_el = card.find("h4", class_=re.compile(r"base-search-card__subtitle"))
+                        loc_el = card.find("span", class_=re.compile(r"job-search-card__location"))
+                        link_el = card.find("a", class_=re.compile(r"base-card__full-link"))
+
+                        title = title_el.get_text(strip=True) if title_el else ""
+                        company = comp_el.get_text(strip=True) if comp_el else ""
+                        if (
+                            not title
+                            or not company
+                            or company.lower() in EXCLUDED_TIER2_COMPANIES
+                        ):
+                            continue
+
+                        loc_str = (
+                            loc_el.get_text(strip=True)
+                            if loc_el
+                            else ("Remote" if is_remote else location)
+                        )
+                        raw_href = str(link_el.get("href") or "").split("?")[0].strip() if link_el else ""
+                        urn = str(card.get("data-entity-urn") or "")
+                        job_id_match = re.search(r"(\d{7,12})", urn or raw_href)
+                        job_id = job_id_match.group(1) if job_id_match else ""
+                        if not raw_href and job_id:
+                            raw_href = f"https://www.linkedin.com/jobs/view/{job_id}"
+                        if not raw_href:
+                            continue
+
+                        placeholder_desc = (
+                            f"{title} at {company} ({loc_str}). "
+                            f"Matched search query: {term}."
+                        )
+                        # Stable content_hash keyed on LinkedIn job ID + title + company
+                        content_hash = compute_content_hash(
+                            title, company, job_id or raw_href
+                        )
+                        collected.append(
+                            ScrapedJob(
+                                source="linkedin",
+                                source_id=job_id or content_hash[:16],
+                                title=title,
+                                company=company,
+                                location=loc_str,
+                                is_remote=bool(
+                                    is_remote
+                                    or "remote" in loc_str.lower()
+                                    or "remote" in title.lower()
+                                ),
+                                url=raw_href,
+                                content_hash=content_hash,
+                                description_text=placeholder_desc,
+                            )
+                        )
+                    break
+                except Exception as exc:
+                    backoff = (2 ** attempt) + random.uniform(2.0, 4.0)
+                    logger.warning(
+                        "LinkedIn guest search attempt %d failed for '%s': %s",
+                        attempt + 1,
+                        term,
+                        exc,
+                    )
+                    self.sleep_fn(backoff)
+
+        return collected
+
+    def hydrate_linkedin_description(self, job: ScrapedJob) -> ScrapedJob:
+        """
+        Stage 2 of LinkedIn scraping: Fetches the full job posting description from LinkedIn's
+        guest detail endpoint (`https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{id}`)
+        only for candidate jobs that passed filtering and are about to be evaluated.
+        """
+        if job.source != "linkedin" or len(job.description_text) > 350:
+            return job
+
+        job_id_match = re.search(r"(\d{7,12})", f"{job.source_id} {job.url}")
+        if not job_id_match:
+            return job
+
+        job_id = job_id_match.group(1)
+        detail_url = f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}"
+        browser_headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+
+        for attempt in range(2):
+            try:
+                self.sleep_fn(random.uniform(1.2, 2.2))
+                resp = self.client.get(detail_url, headers=browser_headers)
+                if resp.status_code == 429:
+                    self.sleep_fn(4.0 + attempt * 3.0)
+                    continue
+                resp.raise_for_status()
+                soup = BeautifulSoup(resp.text, "html.parser")
+                desc_div = soup.find(
+                    "div",
+                    class_=re.compile(r"show-more-less-html__markup|description__text"),
+                )
+                raw_html = str(desc_div) if desc_div else resp.text
+                cleaned = clean_job_description(raw_html)
+                if cleaned and len(cleaned) > 100:
+                    return job.model_copy(update={"description_text": cleaned})
+                break
+            except Exception as exc:
+                logger.warning(
+                    "Could not hydrate full LinkedIn description for job %s (%s): %s",
+                    job_id,
+                    job.company,
+                    exc,
+                )
+        return job
+
     def fetch_single_url(self, target_url: str) -> Optional[ScrapedJob]:
         """Scrapes an arbitrary job posting URL submitted via the on-demand task queue."""
         try:
@@ -399,7 +570,7 @@ class JobCollector:
             per_title_limit = 15 if len(titles_to_query) > 6 else 25
             if allow_remote:
                 logger.info(
-                    "Running Tier-2 Indeed + Remotive remote discovery across all %d titles=%s (location='United States', is_remote=True)...",
+                    "Running Tier-2 Indeed + LinkedIn (f_WT=2 Remote) + Remotive discovery across all %d titles=%s...",
                     len(titles_to_query),
                     titles_to_query,
                 )
@@ -411,11 +582,18 @@ class JobCollector:
                         results_wanted=per_title_limit,
                     )
                 )
+                raw_jobs.extend(
+                    self.fetch_linkedin_guest_jobs(
+                        titles_to_query,
+                        location="United States",
+                        is_remote=True,
+                    )
+                )
                 raw_jobs.extend(self.fetch_remotive_remote_jobs(limit=50))
             if preferred_locations:
                 for local_area in preferred_locations[:3]:
                     logger.info(
-                        "Running Tier-2 Indeed 50-mile metro discovery across all %d titles=%s around '%s'...",
+                        "Running Tier-2 Indeed + LinkedIn 50-mile metro discovery across all %d titles=%s around '%s'...",
                         len(titles_to_query),
                         titles_to_query,
                         local_area,
@@ -426,6 +604,14 @@ class JobCollector:
                             location=local_area,
                             is_remote=False,
                             results_wanted=per_title_limit,
+                            distance=50,
+                        )
+                    )
+                    raw_jobs.extend(
+                        self.fetch_linkedin_guest_jobs(
+                            titles_to_query,
+                            location=local_area,
+                            is_remote=False,
                             distance=50,
                         )
                     )

@@ -365,13 +365,16 @@ def run_nightly_batch(config: WorkerConfig, max_jobs: Optional[int] = None) -> N
             effective_max_jobs,
         )
         for idx, (job, sem_score) in enumerate(top_candidates, start=1):
+            if job.source == "linkedin":
+                job = collector.hydrate_linkedin_description(job)
             logger.info(
-                "[Discovery %d/%d] Scoring '%s' at '%s' (%s, semantic_score=%.2f)...",
+                "[Discovery %d/%d] Scoring '%s' at '%s' (%s, source=%s, semantic_score=%.2f)...",
                 idx,
                 len(top_candidates),
                 job.title,
                 job.company,
                 job.location,
+                job.source,
                 sem_score,
             )
             with psycopg.connect(config.database_url) as job_conn:
