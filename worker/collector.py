@@ -13,6 +13,49 @@ from worker.schemas import ScrapedJob
 
 logger = logging.getLogger(__name__)
 
+# Mega-cap giants and staffing/spam aggregators excluded from Tier-2 JobSpy discovery
+EXCLUDED_TIER2_COMPANIES = {
+    "amazon",
+    "amazon web services",
+    "aws",
+    "google",
+    "meta",
+    "apple",
+    "microsoft",
+    "netflix",
+    "stripe",
+    "openai",
+    "cloudflare",
+    "uber",
+    "airbnb",
+    "coinbase",
+    "palantir",
+    "datadog",
+    "deloitte",
+    "accenture",
+    "cognizant",
+    "infosys",
+    "tata consultancy services",
+    "tcs",
+    "wipro",
+    "capgemini",
+    "revature",
+    "synergisticit",
+    "dataannotation",
+    "data annotation",
+    "outlier",
+    "mercor",
+    "turing",
+    "bairesdev",
+    "crossover",
+    "canonical",
+    "cybercoders",
+    "jobot",
+    "dice",
+    "lensa",
+    "tie talent",
+}
+
 
 class JobCollector:
     """Fetches, cleans, and deduplicates job listings across Tier-1 ATS APIs and Tier-2 JobSpy."""
@@ -139,11 +182,12 @@ class JobCollector:
         search_terms: List[str],
         location: str = "United States",
         is_remote: bool = True,
-        results_wanted: int = 15,
+        results_wanted: int = 25,
         max_retries: int = 2,
     ) -> List[ScrapedJob]:
         """
         Tier-2 Aggregator Discovery using JobSpy with exponential backoff and jittered delays (2-5s).
+        Focuses on smaller/mid-sized employers by filtering out mega-cap tech and staffing spam farms.
         """
         try:
             from jobspy import scrape_jobs  # type: ignore
@@ -171,6 +215,12 @@ class JobCollector:
                         for _, row in df.iterrows():
                             title = str(row.get("title") or "").strip()
                             company = str(row.get("company") or "Unknown").strip()
+                            if (
+                                not company
+                                or company.lower() == "nan"
+                                or company.lower() in EXCLUDED_TIER2_COMPANIES
+                            ):
+                                continue
                             raw_desc = str(row.get("description") or "").strip()
                             url = str(row.get("job_url") or "").strip()
                             if not raw_desc or raw_desc.lower() == "nan":
@@ -288,39 +338,52 @@ class JobCollector:
         ats_boards: Dict[str, List[str]],
         positive_titles: List[str],
         existing_hashes: Set[str],
+        enable_tier1: bool = False,
         enable_tier2: bool = True,
         preferred_locations: Optional[List[str]] = None,
         allow_remote: bool = True,
     ) -> List[ScrapedJob]:
-        """Executes Tier-1 ATS scraping and Tier-2 JobSpy discovery, returning deduplicated jobs."""
+        """Executes Tier-2 JobSpy discovery (and optional Tier-1 ATS scraping), returning deduplicated jobs."""
         raw_jobs: List[ScrapedJob] = []
 
-        for board in ats_boards.get("greenhouse", []):
-            raw_jobs.extend(self.fetch_greenhouse_board(board))
-        for board in ats_boards.get("lever", []):
-            raw_jobs.extend(self.fetch_lever_board(board))
-        for board in ats_boards.get("ashby", []):
-            raw_jobs.extend(self.fetch_ashby_board(board))
+        if enable_tier1:
+            for board in ats_boards.get("greenhouse", []):
+                raw_jobs.extend(self.fetch_greenhouse_board(board))
+            for board in ats_boards.get("lever", []):
+                raw_jobs.extend(self.fetch_lever_board(board))
+            for board in ats_boards.get("ashby", []):
+                raw_jobs.extend(self.fetch_ashby_board(board))
 
         if enable_tier2 and positive_titles:
-            search_loc = (
-                preferred_locations[0]
-                if preferred_locations and not allow_remote
-                else "United States"
-            )
-            logger.info(
-                "Running Tier-2 JobSpy discovery for titles=%s (location='%s', is_remote=%s)...",
-                positive_titles[:3],
-                search_loc,
-                allow_remote,
-            )
-            raw_jobs.extend(
-                self.fetch_tier2_jobspy(
-                    positive_titles[:3],
-                    location=search_loc,
-                    is_remote=allow_remote,
+            titles_to_query = positive_titles[:4]
+            if allow_remote:
+                logger.info(
+                    "Running Tier-2 JobSpy remote discovery for titles=%s (location='United States', is_remote=True)...",
+                    titles_to_query,
                 )
-            )
+                raw_jobs.extend(
+                    self.fetch_tier2_jobspy(
+                        titles_to_query,
+                        location="United States",
+                        is_remote=True,
+                        results_wanted=25,
+                    )
+                )
+            if preferred_locations:
+                for local_area in preferred_locations[:2]:
+                    logger.info(
+                        "Running Tier-2 JobSpy local area discovery for titles=%s in '%s'...",
+                        titles_to_query[:2],
+                        local_area,
+                    )
+                    raw_jobs.extend(
+                        self.fetch_tier2_jobspy(
+                            titles_to_query[:2],
+                            location=local_area,
+                            is_remote=False,
+                            results_wanted=20,
+                        )
+                    )
 
         return self.deduplicate_jobs(raw_jobs, existing_hashes)
 

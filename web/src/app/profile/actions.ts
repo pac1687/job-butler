@@ -124,6 +124,7 @@ export async function updateJobPreferencesAction(payload: {
   preferred_locations: string[];
   allow_remote: boolean;
   max_per_company: number;
+  enable_tier1: boolean;
   enable_tier2: boolean;
 }) {
   const session = await auth();
@@ -143,6 +144,7 @@ export async function updateJobPreferencesAction(payload: {
     preferred_locations: payload.preferred_locations,
     allow_remote: payload.allow_remote,
     max_per_company: Math.max(1, Math.min(10, Number(payload.max_per_company) || 2)),
+    enable_tier1: payload.enable_tier1,
     enable_tier2: payload.enable_tier2,
   };
 

@@ -46,6 +46,7 @@ export interface JobPreferencesRecord {
     preferred_locations?: string[];
     allow_remote?: boolean;
     max_per_company?: number;
+    enable_tier1?: boolean;
     enable_tier2?: boolean;
   };
 }

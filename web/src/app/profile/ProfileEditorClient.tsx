@@ -60,6 +60,9 @@ export function ProfileEditorClient({
   const [maxPerCompany, setMaxPerCompany] = useState<number>(
     initialBoardSettings.max_per_company ?? 2
   );
+  const [enableTier1, setEnableTier1] = useState<boolean>(
+    initialBoardSettings.enable_tier1 ?? false
+  );
   const [enableTier2, setEnableTier2] = useState<boolean>(
     initialBoardSettings.enable_tier2 ?? true
   );
@@ -97,6 +100,7 @@ export function ProfileEditorClient({
       preferred_locations: preferredLocations,
       allow_remote: allowRemote,
       max_per_company: maxPerCompany,
+      enable_tier1: enableTier1,
       enable_tier2: enableTier2,
     });
     setStatusBanner(
@@ -272,7 +276,19 @@ export function ProfileEditorClient({
                   className="rounded border-slate-700 bg-slate-950"
                 />
                 <span>
-                  <strong>Enable LinkedIn &amp; Indeed Aggregator (Tier-2 JobSpy)</strong> alongside 34 curated Greenhouse/Lever/Ashby boards
+                  <strong>Tier-2 JobSpy Discovery (LinkedIn &amp; Indeed)</strong> — Focuses on smaller &amp; mid-sized companies (filters out FAANG/mega-cap &amp; staffing spam)
+                </span>
+              </label>
+
+              <label className="flex items-center gap-2.5 text-xs text-slate-400 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={enableTier1}
+                  onChange={(e) => setEnableTier1(e.target.checked)}
+                  className="rounded border-slate-700 bg-slate-950"
+                />
+                <span>
+                  <strong>Include Tier-1 Big-Tech ATS Boards</strong> (Stripe, Cloudflare, OpenAI, Vercel, etc. — off by default)
                 </span>
               </label>
 

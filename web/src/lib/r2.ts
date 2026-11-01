@@ -1,4 +1,8 @@
-import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
+import {
+  S3Client,
+  GetObjectCommand,
+  DeleteObjectCommand,
+} from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { isAuthorizedAdminEmail } from "@/lib/auth-guard";
 import { getSql } from "@/lib/db";
@@ -48,6 +52,56 @@ export async function generatePresignedArtifactUrl(
     Key: storageKey,
   });
   return getSignedUrl(client, command, { expiresIn: expiresInSeconds });
+}
+
+export async function deleteStorageKeysFromR2(
+  rawKeys: Array<string | null | undefined>
+): Promise<void> {
+  const endpoint =
+    process.env.S3_ENDPOINT_URL ||
+    process.env.AWS_ENDPOINT_URL_S3 ||
+    process.env.R2_ENDPOINT_URL ||
+    "";
+  if (!endpoint.startsWith("https://") || endpoint.includes("<")) {
+    return;
+  }
+
+  const expandedKeys = new Set<string>();
+  for (const key of rawKeys) {
+    if (!key || !key.trim()) continue;
+    const trimmed = key.trim();
+    expandedKeys.add(trimmed);
+    const slashIdx = trimmed.lastIndexOf("/");
+    if (slashIdx > 0) {
+      const prefix = trimmed.slice(0, slashIdx);
+      expandedKeys.add(`${prefix}/resume.pdf`);
+      expandedKeys.add(`${prefix}/cover_letter.pdf`);
+      expandedKeys.add(`${prefix}/payload_snapshot.json`);
+    }
+  }
+
+  if (expandedKeys.size === 0) return;
+
+  const bucket =
+    process.env.S3_BUCKET_NAME ||
+    process.env.R2_BUCKET_NAME ||
+    "job-artifacts";
+  const client = createR2Client();
+
+  await Promise.all(
+    Array.from(expandedKeys).map(async (key) => {
+      try {
+        await client.send(
+          new DeleteObjectCommand({
+            Bucket: bucket,
+            Key: key,
+          })
+        );
+      } catch (err) {
+        console.warn(`Failed to delete object '${key}' from S3:`, err);
+      }
+    })
+  );
 }
 
 export async function handleArtifactPresignRequest(

@@ -130,6 +130,7 @@ export const DEFAULT_PREFERENCES: JobPreferencesRecord = {
     preferred_locations: [],
     allow_remote: true,
     max_per_company: 2,
+    enable_tier1: false,
     enable_tier2: true,
   },
 };

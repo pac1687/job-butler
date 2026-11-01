@@ -163,6 +163,7 @@ def _load_pipeline_state(conn: Any) -> Dict[str, Any]:
 
         allow_remote = bool(raw_boards.get("allow_remote", True))
         max_per_company = int(raw_boards.get("max_per_company", 2))
+        enable_tier1 = bool(raw_boards.get("enable_tier1", False))
         enable_tier2 = bool(raw_boards.get("enable_tier2", True))
 
         preferences = (
@@ -175,6 +176,7 @@ def _load_pipeline_state(conn: Any) -> Dict[str, Any]:
                 "preferred_locations": preferred_locations,
                 "allow_remote": allow_remote,
                 "max_per_company": max_per_company,
+                "enable_tier1": enable_tier1,
                 "enable_tier2": enable_tier2,
             }
             if pref_row
@@ -187,6 +189,7 @@ def _load_pipeline_state(conn: Any) -> Dict[str, Any]:
                 "preferred_locations": [profile_location] if profile_location else [],
                 "allow_remote": True,
                 "max_per_company": 2,
+                "enable_tier1": False,
                 "enable_tier2": True,
             }
         )
@@ -322,19 +325,19 @@ def run_nightly_batch(config: WorkerConfig, max_jobs: Optional[int] = None) -> N
         preferred_locations = state["preferences"].get("preferred_locations") or []
         allow_remote = bool(state["preferences"].get("allow_remote", True))
         max_per_company = int(state["preferences"].get("max_per_company", 2))
+        enable_tier1 = bool(state["preferences"].get("enable_tier1", False))
         enable_tier2 = bool(state["preferences"].get("enable_tier2", True))
 
         logger.info(
-            "Scraping Tier-1 ATS boards (%d Greenhouse, %d Lever, %d Ashby) + Tier-2=%s...",
-            len(ats_boards.get("greenhouse", [])),
-            len(ats_boards.get("lever", [])),
-            len(ats_boards.get("ashby", [])),
+            "Starting discovery scrape (Tier-2 JobSpy=%s, Tier-1 Big-Tech ATS=%s)...",
             enable_tier2,
+            enable_tier1,
         )
         scraped = collector.collect_all(
             ats_boards=ats_boards,
             positive_titles=state["preferences"]["positive_titles"],
             existing_hashes=state["existing_hashes"],
+            enable_tier1=enable_tier1,
             enable_tier2=enable_tier2,
             preferred_locations=preferred_locations,
             allow_remote=allow_remote,

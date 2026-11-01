@@ -10,6 +10,7 @@ interface JobMatchFeedProps {
   onEnqueueUrl?: (url: string) => Promise<void>;
   onRunBatchDiscovery?: (maxJobs: number) => Promise<void>;
   onBatchTailorJobs?: (jobIds: string[]) => Promise<void>;
+  onDeleteMatches?: (matchIds: string[]) => Promise<void>;
 }
 
 const STATUS_OPTIONS: MatchStatus[] = ["NEW_MATCH", "SAVED", "APPLIED", "ARCHIVED"];
@@ -22,6 +23,7 @@ export function JobMatchFeed({
   onEnqueueUrl,
   onRunBatchDiscovery,
   onBatchTailorJobs,
+  onDeleteMatches,
 }: JobMatchFeedProps) {
   const [matches, setMatches] = useState<EvaluatedJobMatch[]>(initialMatches);
   const [activeFilter, setActiveFilter] = useState<string>("ALL");
@@ -35,6 +37,7 @@ export function JobMatchFeed({
   const [selectedJobIds, setSelectedJobIds] = useState<string[]>([]);
   const [queuedTailorJobIds, setQueuedTailorJobIds] = useState<string[]>([]);
   const [tailoringBatch, setTailoringBatch] = useState(false);
+  const [deletingMatches, setDeletingMatches] = useState(false);
   const [loadingArtifactId, setLoadingArtifactId] = useState<string | null>(null);
 
   const filteredMatches = matches.filter((m) =>
@@ -126,10 +129,34 @@ export function JobMatchFeed({
 
   function handleSelectAllUntailored() {
     if (readOnly) return;
-    const untailoredIds = filteredMatches
-      .filter((m) => !m.resume_storage_key)
-      .map((m) => m.job_id);
-    setSelectedJobIds(untailoredIds);
+    const visibleJobIds = filteredMatches.map((m) => m.job_id);
+    const allSelected =
+      visibleJobIds.length > 0 &&
+      visibleJobIds.every((id) => selectedJobIds.includes(id));
+    if (allSelected) {
+      setSelectedJobIds([]);
+    } else {
+      setSelectedJobIds(visibleJobIds);
+    }
+  }
+
+  async function handleDeleteMatches(targetMatches: EvaluatedJobMatch[]) {
+    if (readOnly || targetMatches.length === 0) return;
+    const matchIds = targetMatches.map((m) => m.id);
+    const jobIds = targetMatches.map((m) => m.job_id);
+    try {
+      setDeletingMatches(true);
+      setMatches((prev) => prev.filter((m) => !matchIds.includes(m.id)));
+      setSelectedJobIds((prev) => prev.filter((id) => !jobIds.includes(id)));
+      if (onDeleteMatches) {
+        await onDeleteMatches(matchIds);
+      }
+      setDiscoveryNotice(
+        `Deleted ${matchIds.length} job card(s) and purged any associated PDFs/snapshots from Neon Object Storage.`
+      );
+    } finally {
+      setDeletingMatches(false);
+    }
   }
 
   async function handleTailorJobs(jobIds: string[]) {
@@ -186,26 +213,44 @@ export function JobMatchFeed({
 
         {!readOnly && (
           <div className="flex flex-wrap items-center gap-2">
-            {filteredMatches.some((m) => !m.resume_storage_key) && (
+            {filteredMatches.length > 0 && (
               <button
                 type="button"
                 onClick={handleSelectAllUntailored}
                 className="px-3 py-2 rounded-lg text-xs font-semibold bg-slate-800 text-slate-200 hover:bg-slate-700 border border-slate-700 transition"
               >
-                Select All Untailored
+                {filteredMatches.every((m) => selectedJobIds.includes(m.job_id))
+                  ? "Clear Selection"
+                  : "Select All Visible"}
               </button>
             )}
             {selectedJobIds.length > 0 && (
-              <button
-                type="button"
-                onClick={() => handleTailorJobs(selectedJobIds)}
-                disabled={tailoringBatch}
-                className="px-3.5 py-2 rounded-lg text-xs font-semibold bg-amber-500 text-slate-950 hover:bg-amber-400 disabled:opacity-50 transition"
-              >
-                {tailoringBatch
-                  ? "Queuing PDFs..."
-                  : `✨ Generate PDFs for Selected (${selectedJobIds.length})`}
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={() => handleTailorJobs(selectedJobIds)}
+                  disabled={tailoringBatch || deletingMatches}
+                  className="px-3.5 py-2 rounded-lg text-xs font-semibold bg-amber-500 text-slate-950 hover:bg-amber-400 disabled:opacity-50 transition"
+                >
+                  {tailoringBatch
+                    ? "Queuing PDFs..."
+                    : `✨ Generate PDFs for Selected (${selectedJobIds.length})`}
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleDeleteMatches(
+                      matches.filter((m) => selectedJobIds.includes(m.job_id))
+                    )
+                  }
+                  disabled={deletingMatches || tailoringBatch}
+                  className="px-3 py-2 rounded-lg text-xs font-semibold bg-rose-950/90 text-rose-200 hover:bg-rose-900 border border-rose-800 disabled:opacity-50 transition"
+                >
+                  {deletingMatches
+                    ? "Deleting..."
+                    : `🗑️ Delete Selected (${selectedJobIds.length})`}
+                </button>
+              </>
             )}
             <div className="flex items-center bg-slate-950 border border-slate-700 rounded-lg overflow-hidden">
               <label
@@ -450,6 +495,17 @@ export function JobMatchFeed({
                       </option>
                     ))}
                   </select>
+                  {!readOnly && (
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteMatches([match])}
+                      disabled={deletingMatches}
+                      title="Delete job card and purge associated PDFs from storage"
+                      className="px-2.5 py-1 rounded-md text-xs font-medium bg-rose-950/60 hover:bg-rose-900 text-rose-300 border border-rose-800/60 disabled:opacity-50 transition"
+                    >
+                      🗑️ Delete
+                    </button>
+                  )}
                 </div>
               </div>
             </article>

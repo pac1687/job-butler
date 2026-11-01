@@ -5,6 +5,7 @@ import { JobMatchFeed } from "@/components/JobMatchFeed";
 import { getSql, type EvaluatedJobMatch } from "@/lib/db";
 import { DEMO_MATCHES } from "@/lib/mock-data";
 import {
+  deleteMatchesAction,
   enqueueBatchDiscoveryAction,
   enqueueBatchTailorAction,
   enqueueJobUrlAction,
@@ -81,6 +82,7 @@ export default async function DashboardPage() {
           onEnqueueUrl={enqueueJobUrlAction}
           onRunBatchDiscovery={enqueueBatchDiscoveryAction}
           onBatchTailorJobs={enqueueBatchTailorAction}
+          onDeleteMatches={deleteMatchesAction}
         />
       </main>
     </div>
