@@ -199,7 +199,7 @@ class JobCollector:
 
         collected: List[ScrapedJob] = []
         for term in search_terms:
-            jitter = random.uniform(1.5, 3.5)
+            jitter = random.uniform(0.8, 1.8)
             self.sleep_fn(jitter)
 
             for attempt in range(max_retries):
@@ -395,10 +395,12 @@ class JobCollector:
                 raw_jobs.extend(self.fetch_ashby_board(board))
 
         if enable_tier2 and positive_titles:
-            titles_to_query = positive_titles[:4]
+            titles_to_query = [t.strip() for t in positive_titles if t and t.strip()]
+            per_title_limit = 15 if len(titles_to_query) > 6 else 25
             if allow_remote:
                 logger.info(
-                    "Running Tier-2 Indeed + Remotive remote discovery for titles=%s (location='United States', is_remote=True)...",
+                    "Running Tier-2 Indeed + Remotive remote discovery across all %d titles=%s (location='United States', is_remote=True)...",
+                    len(titles_to_query),
                     titles_to_query,
                 )
                 raw_jobs.extend(
@@ -406,14 +408,15 @@ class JobCollector:
                         titles_to_query,
                         location="United States",
                         is_remote=True,
-                        results_wanted=25,
+                        results_wanted=per_title_limit,
                     )
                 )
                 raw_jobs.extend(self.fetch_remotive_remote_jobs(limit=50))
             if preferred_locations:
-                for local_area in preferred_locations[:2]:
+                for local_area in preferred_locations[:3]:
                     logger.info(
-                        "Running Tier-2 Indeed 50-mile metro discovery for titles=%s around '%s'...",
+                        "Running Tier-2 Indeed 50-mile metro discovery across all %d titles=%s around '%s'...",
+                        len(titles_to_query),
                         titles_to_query,
                         local_area,
                     )
@@ -422,7 +425,7 @@ class JobCollector:
                             titles_to_query,
                             location=local_area,
                             is_remote=False,
-                            results_wanted=20,
+                            results_wanted=per_title_limit,
                             distance=50,
                         )
                     )
