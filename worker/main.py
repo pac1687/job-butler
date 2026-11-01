@@ -161,11 +161,12 @@ def process_single_job(
     )
 
 
-def run_nightly_batch(config: WorkerConfig, max_jobs: int = 5) -> None:
+def run_nightly_batch(config: WorkerConfig, max_jobs: Optional[int] = None) -> None:
     """
     Executes the batch job discovery & tailoring pipeline with pre-flight check,
     distributed lease, retention purge, and short-lived DB connections.
     """
+    effective_max_jobs = max(1, int(max_jobs if max_jobs is not None else config.max_jobs_per_batch))
     if not check_lm_studio_health(config.lm_studio_base_url):
         logger.warning("LM Studio is offline; skipping discovery batch.")
         return
@@ -204,13 +205,14 @@ def run_nightly_batch(config: WorkerConfig, max_jobs: int = 5) -> None:
             min_semantic_score=state["preferences"]["min_semantic_score"],
         )
 
-        top_candidates = ranked[:max_jobs]
+        top_candidates = ranked[:effective_max_jobs]
         logger.info(
-            "Discovery batch scraped %d new jobs; %d passed semantic filter (>= %.2f). Processing top %d matches...",
+            "Discovery batch scraped %d new jobs; %d passed semantic filter (>= %.2f). Processing top %d matches (max_jobs=%d)...",
             len(scraped),
             len(ranked),
             state["preferences"]["min_semantic_score"],
             len(top_candidates),
+            effective_max_jobs,
         )
         for idx, (job, sem_score) in enumerate(top_candidates, start=1):
             logger.info(
@@ -308,7 +310,7 @@ def poll_task_queue_once(config: WorkerConfig) -> bool:
 
         elif task_type in ("EVALUATE_URL", "REGENERATE_RESUME", "REWRITE_COVER_LETTER"):
             if payload.get("mode") == "BATCH_DISCOVERY":
-                max_jobs = int(payload.get("max_jobs") or 5)
+                max_jobs = int(payload.get("max_jobs") or config.max_jobs_per_batch)
                 run_nightly_batch(config, max_jobs=max_jobs)
                 with psycopg.connect(config.database_url) as conn:
                     with conn.cursor() as cur:
@@ -434,11 +436,17 @@ def main() -> None:
         action="store_true",
         help="Run persistent daemon polling job_task_queue.",
     )
+    parser.add_argument(
+        "--max-jobs",
+        type=int,
+        default=None,
+        help="Maximum number of matched jobs to evaluate and tailor per batch run (overrides MAX_JOBS_PER_BATCH).",
+    )
     args = parser.parse_args()
     config = WorkerConfig()
 
     if args.nightly:
-        run_nightly_batch(config)
+        run_nightly_batch(config, max_jobs=args.max_jobs)
     elif args.listen_queue:
         run_queue_listener(config)
 

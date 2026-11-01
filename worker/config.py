@@ -72,9 +72,18 @@ class WorkerConfig:
     queue_poll_interval_seconds: int = field(
         default_factory=lambda: int(os.getenv("QUEUE_POLL_INTERVAL_SECONDS", "10"))
     )
+    max_jobs_per_batch: int = field(
+        default_factory=lambda: int(os.getenv("MAX_JOBS_PER_BATCH", "5"))
+    )
     llm_temperature: float = 0.1
     llm_max_context_tokens: int = 8192
     semantic_drift_threshold: float = 0.82
     bullet_max_chars: int = 170
     max_bullets_per_role: int = 4
+
+    @classmethod
+    def from_env(cls) -> "WorkerConfig":
+        """Constructs a WorkerConfig populated from current environment variables."""
+        return cls()
+
 

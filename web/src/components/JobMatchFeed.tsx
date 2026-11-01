@@ -8,10 +8,11 @@ interface JobMatchFeedProps {
   readOnly?: boolean;
   onUpdateStatus?: (matchId: string, status: MatchStatus) => Promise<void>;
   onEnqueueUrl?: (url: string) => Promise<void>;
-  onRunBatchDiscovery?: () => Promise<void>;
+  onRunBatchDiscovery?: (maxJobs: number) => Promise<void>;
 }
 
 const STATUS_OPTIONS: MatchStatus[] = ["NEW_MATCH", "SAVED", "APPLIED", "ARCHIVED"];
+const BATCH_SIZE_OPTIONS: number[] = [3, 5, 10, 15, 25];
 
 export function JobMatchFeed({
   initialMatches,
@@ -26,6 +27,7 @@ export function JobMatchFeed({
   const [showQueueModal, setShowQueueModal] = useState(false);
   const [customUrl, setCustomUrl] = useState("");
   const [queueMessage, setQueueMessage] = useState<string | null>(null);
+  const [batchMaxJobs, setBatchMaxJobs] = useState<number>(5);
   const [discoveryNotice, setDiscoveryNotice] = useState<string | null>(null);
   const [runningDiscovery, setRunningDiscovery] = useState(false);
   const [loadingArtifactId, setLoadingArtifactId] = useState<string | null>(null);
@@ -89,21 +91,21 @@ export function JobMatchFeed({
     if (readOnly) return;
     try {
       setRunningDiscovery(true);
-      setDiscoveryNotice("Enqueuing batch job discovery scrape...");
+      setDiscoveryNotice(`Enqueuing batch job discovery scrape (up to ${batchMaxJobs} jobs)...`);
       if (onRunBatchDiscovery) {
-        await onRunBatchDiscovery();
+        await onRunBatchDiscovery(batchMaxJobs);
       } else {
         await fetch("/api/tasks", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             task_type: "EVALUATE_URL",
-            payload: { mode: "BATCH_DISCOVERY", max_jobs: 5 },
+            payload: { mode: "BATCH_DISCOVERY", max_jobs: batchMaxJobs },
           }),
         });
       }
       setDiscoveryNotice(
-        "Discovery scrape queued! Your local queue-listener will fetch, rank, score, and tailor the top matching roles on its next 10s poll."
+        `Discovery scrape queued (max ${batchMaxJobs} jobs)! Your local queue-listener will fetch, rank, score, and tailor the top matching roles on its next 10s poll.`
       );
     } finally {
       setRunningDiscovery(false);
@@ -132,12 +134,36 @@ export function JobMatchFeed({
 
         {!readOnly && (
           <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center bg-slate-950 border border-slate-700 rounded-lg overflow-hidden">
+              <label
+                htmlFor="batch-max-jobs"
+                className="px-2.5 py-1.5 text-xs text-slate-400 border-r border-slate-800"
+              >
+                Max Jobs
+              </label>
+              <select
+                id="batch-max-jobs"
+                aria-label="Maximum jobs per discovery scrape"
+                value={batchMaxJobs}
+                onChange={(e) => setBatchMaxJobs(Number(e.target.value))}
+                disabled={runningDiscovery}
+                className="bg-slate-950 px-2.5 py-1.5 text-xs font-semibold text-white focus:outline-none"
+              >
+                {BATCH_SIZE_OPTIONS.map((count) => (
+                  <option key={count} value={count}>
+                    {count}
+                  </option>
+                ))}
+              </select>
+            </div>
             <button
               onClick={handleRunBatchDiscovery}
               disabled={runningDiscovery}
               className="px-3.5 py-2 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-50 transition"
             >
-              {runningDiscovery ? "Queuing Scrape..." : "🔄 Run Discovery Scrape Now"}
+              {runningDiscovery
+                ? "Queuing Scrape..."
+                : `🔄 Run Discovery Scrape (${batchMaxJobs})`}
             </button>
             <button
               onClick={() => {
