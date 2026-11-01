@@ -126,6 +126,12 @@ export const DEFAULT_PREFERENCES: JobPreferencesRecord = {
   natural_language_notes:
     "Focus on TypeScript, Python, Node.js, PostgreSQL, distributed backend systems, and modern web architectures.",
   min_semantic_score: 0.7,
+  ats_boards: {
+    preferred_locations: [],
+    allow_remote: true,
+    max_per_company: 2,
+    enable_tier2: true,
+  },
 };
 
 export const DEFAULT_MASTER_PROFILE: MasterProfileRecord = {

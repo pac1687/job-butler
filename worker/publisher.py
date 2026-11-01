@@ -174,3 +174,34 @@ class ArtifactPublisher:
         conn.commit()
         return match_id
 
+    def update_match_artifacts(
+        self,
+        conn: Any,
+        job_id: str,
+        resume_storage_key: Optional[str],
+        cover_letter_storage_key: Optional[str],
+        payload_snapshot: Dict[str, Any],
+    ) -> Optional[str]:
+        """Updates an existing evaluated_matches row with newly compiled PDF storage keys and snapshot."""
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE evaluated_matches
+                SET resume_storage_key = %s,
+                    cover_letter_storage_key = %s,
+                    payload_snapshot = %s::jsonb
+                WHERE job_id = %s
+                RETURNING id;
+                """,
+                (
+                    resume_storage_key,
+                    cover_letter_storage_key,
+                    json.dumps(payload_snapshot),
+                    job_id,
+                ),
+            )
+            row = cur.fetchone()
+        conn.commit()
+        return str(row[0]) if row else None
+
+

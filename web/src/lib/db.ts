@@ -39,6 +39,15 @@ export interface JobPreferencesRecord {
   negative_title_keywords: string[];
   natural_language_notes: string;
   min_semantic_score: number;
+  ats_boards?: {
+    greenhouse?: string[];
+    lever?: string[];
+    ashby?: string[];
+    preferred_locations?: string[];
+    allow_remote?: boolean;
+    max_per_company?: number;
+    enable_tier2?: boolean;
+  };
 }
 
 export interface MasterProfileRecord {

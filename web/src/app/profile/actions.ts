@@ -115,3 +115,64 @@ export async function saveMasterProfileDirectAction(profile: {
   `;
   revalidatePath("/profile");
 }
+
+export async function updateJobPreferencesAction(payload: {
+  positive_titles: string[];
+  negative_title_keywords: string[];
+  natural_language_notes: string;
+  min_semantic_score: number;
+  preferred_locations: string[];
+  allow_remote: boolean;
+  max_per_company: number;
+  enable_tier2: boolean;
+}) {
+  const session = await auth();
+  if (!isAuthorizedAdminEmail(session?.user?.email)) {
+    throw new Error("Unauthorized");
+  }
+
+  const sql = getSql();
+  const existingRows = await sql`
+    SELECT ats_boards FROM job_preferences ORDER BY id DESC LIMIT 1
+  `;
+  const existingBoards =
+    (existingRows[0]?.ats_boards as Record<string, unknown> | undefined) || {};
+
+  const mergedAtsBoards = {
+    ...existingBoards,
+    preferred_locations: payload.preferred_locations,
+    allow_remote: payload.allow_remote,
+    max_per_company: Math.max(1, Math.min(10, Number(payload.max_per_company) || 2)),
+    enable_tier2: payload.enable_tier2,
+  };
+
+  await sql`
+    INSERT INTO job_preferences (
+      id,
+      positive_titles,
+      negative_title_keywords,
+      natural_language_notes,
+      min_semantic_score,
+      ats_boards,
+      updated_at
+    )
+    VALUES (
+      1,
+      ${JSON.stringify(payload.positive_titles)}::jsonb,
+      ${JSON.stringify(payload.negative_title_keywords)}::jsonb,
+      ${payload.natural_language_notes},
+      ${payload.min_semantic_score},
+      ${JSON.stringify(mergedAtsBoards)}::jsonb,
+      NOW()
+    )
+    ON CONFLICT (id) DO UPDATE
+    SET positive_titles = EXCLUDED.positive_titles,
+        negative_title_keywords = EXCLUDED.negative_title_keywords,
+        natural_language_notes = EXCLUDED.natural_language_notes,
+        min_semantic_score = EXCLUDED.min_semantic_score,
+        ats_boards = EXCLUDED.ats_boards,
+        updated_at = NOW()
+  `;
+  revalidatePath("/profile");
+}
+

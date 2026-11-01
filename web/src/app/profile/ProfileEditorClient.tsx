@@ -1,9 +1,14 @@
 "use client";
 
 import React, { useState } from "react";
-import type { MasterProfileRecord, TailoringRulesRecord } from "@/lib/db";
+import type {
+  JobPreferencesRecord,
+  MasterProfileRecord,
+  TailoringRulesRecord,
+} from "@/lib/db";
 import {
   saveMasterProfileDirectAction,
+  updateJobPreferencesAction,
   updateTailoringRulesAction,
   uploadAndEnqueueMasterResumeAction,
 } from "./actions";
@@ -11,12 +16,60 @@ import {
 interface ProfileEditorClientProps {
   initialProfile: MasterProfileRecord;
   initialRules: TailoringRulesRecord;
+  initialPreferences?: JobPreferencesRecord;
 }
 
 export function ProfileEditorClient({
   initialProfile,
   initialRules,
+  initialPreferences,
 }: ProfileEditorClientProps) {
+  const defaultProfileLocation = String(
+    initialProfile?.basics?.location || ""
+  ).trim();
+  const initialBoardSettings = initialPreferences?.ats_boards || {};
+
+  const [positiveTitles, setPositiveTitles] = useState<string[]>(
+    initialPreferences?.positive_titles || [
+      "Full Stack Engineer",
+      "Senior Software Engineer",
+    ]
+  );
+  const [newPositiveTitle, setNewPositiveTitle] = useState("");
+  const [negativeKeywords, setNegativeKeywords] = useState<string[]>(
+    initialPreferences?.negative_title_keywords || [
+      "Manager",
+      "Staff",
+      "Director",
+    ]
+  );
+  const [newNegativeKeyword, setNewNegativeKeyword] = useState("");
+  const [preferredLocations, setPreferredLocations] = useState<string[]>(
+    initialBoardSettings.preferred_locations &&
+      initialBoardSettings.preferred_locations.length > 0
+      ? initialBoardSettings.preferred_locations
+      : defaultProfileLocation &&
+          !defaultProfileLocation.toLowerCase().includes("remote")
+        ? [defaultProfileLocation]
+        : []
+  );
+  const [newLocation, setNewLocation] = useState("");
+  const [allowRemote, setAllowRemote] = useState<boolean>(
+    initialBoardSettings.allow_remote ?? true
+  );
+  const [maxPerCompany, setMaxPerCompany] = useState<number>(
+    initialBoardSettings.max_per_company ?? 2
+  );
+  const [enableTier2, setEnableTier2] = useState<boolean>(
+    initialBoardSettings.enable_tier2 ?? true
+  );
+  const [minSemanticScore, setMinSemanticScore] = useState<number>(
+    Number(initialPreferences?.min_semantic_score ?? 0.7)
+  );
+  const [naturalLanguageNotes, setNaturalLanguageNotes] = useState<string>(
+    initialPreferences?.natural_language_notes || ""
+  );
+
   const [forbiddenTerms, setForbiddenTerms] = useState<string[]>(
     initialRules.forbidden_terms
   );
@@ -33,6 +86,23 @@ export function ProfileEditorClient({
   );
   const [experience, setExperience] = useState(initialProfile.experience);
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
+
+  async function handleSavePreferences(e: React.FormEvent) {
+    e.preventDefault();
+    await updateJobPreferencesAction({
+      positive_titles: positiveTitles,
+      negative_title_keywords: negativeKeywords,
+      natural_language_notes: naturalLanguageNotes,
+      min_semantic_score: minSemanticScore,
+      preferred_locations: preferredLocations,
+      allow_remote: allowRemote,
+      max_per_company: maxPerCompany,
+      enable_tier2: enableTier2,
+    });
+    setStatusBanner(
+      "Saved discovery location filters, company diversity cap, and target title preferences."
+    );
+  }
 
   async function handleSaveGuardrails(e: React.FormEvent) {
     e.preventDefault();
@@ -111,10 +181,266 @@ export function ProfileEditorClient({
         </form>
       </section>
 
-      {/* 2. Tailoring Guardrails & Constraint Configuration (FR-1.3) */}
+      {/* 2. Job Discovery, Location & Company Diversity Settings */}
+      <section className="bg-slate-900/80 border border-slate-800 rounded-xl p-6 space-y-5">
+        <div>
+          <h2 className="text-lg font-bold text-white">
+            2. Discovery Scrape, Location &amp; Diversity Filters
+          </h2>
+          <p className="text-xs text-slate-400 mt-1">
+            Filter scraped postings to US/Global Remote or your local area, cap max matches per company so one employer cannot dominate your feed, and steer semantic ranking.
+          </p>
+        </div>
+
+        <form onSubmit={handleSavePreferences} className="space-y-5">
+          {/* Remote + Local Area Locations */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-2">
+                Preferred Local Cities / States (For Hybrid or In-Office Roles)
+              </label>
+              <div className="flex flex-wrap gap-2 mb-2">
+                {preferredLocations.map((loc) => (
+                  <span
+                    key={loc}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs bg-emerald-950/80 text-emerald-300 border border-emerald-800"
+                  >
+                    📍 {loc}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPreferredLocations(
+                          preferredLocations.filter((l) => l !== loc)
+                        )
+                      }
+                      className="hover:text-white"
+                    >
+                      ✕
+                    </button>
+                  </span>
+                ))}
+                {preferredLocations.length === 0 && (
+                  <span className="text-xs text-slate-500">
+                    No local cities added (remote-only unless added)
+                  </span>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={newLocation}
+                  onChange={(e) => setNewLocation(e.target.value)}
+                  placeholder="e.g., Austin, TX or Chicago, IL"
+                  className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white flex-1"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (newLocation.trim()) {
+                      setPreferredLocations([
+                        ...preferredLocations,
+                        newLocation.trim(),
+                      ]);
+                      setNewLocation("");
+                    }
+                  }}
+                  className="px-3 py-1.5 rounded-lg text-xs bg-slate-800 text-white"
+                >
+                  + Add Location
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-3 bg-slate-950/60 border border-slate-800 rounded-lg p-3.5">
+              <label className="flex items-center gap-2.5 text-xs text-slate-200 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={allowRemote}
+                  onChange={(e) => setAllowRemote(e.target.checked)}
+                  className="rounded border-slate-700 bg-slate-950"
+                />
+                <span>
+                  <strong>Include Remote Jobs (US / Global)</strong> — Automatically excludes foreign-only remote roles (e.g. UK, EMEA, India)
+                </span>
+              </label>
+
+              <label className="flex items-center gap-2.5 text-xs text-slate-200 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={enableTier2}
+                  onChange={(e) => setEnableTier2(e.target.checked)}
+                  className="rounded border-slate-700 bg-slate-950"
+                />
+                <span>
+                  <strong>Enable LinkedIn &amp; Indeed Aggregator (Tier-2 JobSpy)</strong> alongside 34 curated Greenhouse/Lever/Ashby boards
+                </span>
+              </label>
+
+              <div className="flex flex-wrap items-center gap-4 pt-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-slate-400">
+                    Max Matches / Company:
+                  </span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={10}
+                    value={maxPerCompany}
+                    onChange={(e) => setMaxPerCompany(Number(e.target.value))}
+                    className="w-16 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-white"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-slate-400">
+                    Min Vector Sim:
+                  </span>
+                  <input
+                    type="number"
+                    step={0.05}
+                    min={0.4}
+                    max={0.95}
+                    value={minSemanticScore}
+                    onChange={(e) =>
+                      setMinSemanticScore(Number(e.target.value))
+                    }
+                    className="w-20 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-white"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Target Positive Titles & Negative Keywords */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-2">
+                Target Role Titles (Positive Anchors)
+              </label>
+              <div className="flex flex-wrap gap-2 mb-2">
+                {positiveTitles.map((title) => (
+                  <span
+                    key={title}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs bg-indigo-950/80 text-indigo-300 border border-indigo-800"
+                  >
+                    {title}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPositiveTitles(
+                          positiveTitles.filter((t) => t !== title)
+                        )
+                      }
+                      className="hover:text-white"
+                    >
+                      ✕
+                    </button>
+                  </span>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={newPositiveTitle}
+                  onChange={(e) => setNewPositiveTitle(e.target.value)}
+                  placeholder="Add target title (e.g., Full Stack Engineer)"
+                  className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white flex-1"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (newPositiveTitle.trim()) {
+                      setPositiveTitles([
+                        ...positiveTitles,
+                        newPositiveTitle.trim(),
+                      ]);
+                      setNewPositiveTitle("");
+                    }
+                  }}
+                  className="px-3 py-1.5 rounded-lg text-xs bg-slate-800 text-white"
+                >
+                  + Add Title
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-2">
+                Excluded Title Keywords (Deterministic Pre-Filter)
+              </label>
+              <div className="flex flex-wrap gap-2 mb-2">
+                {negativeKeywords.map((kw) => (
+                  <span
+                    key={kw}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs bg-rose-950/80 text-rose-300 border border-rose-800"
+                  >
+                    {kw}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setNegativeKeywords(
+                          negativeKeywords.filter((k) => k !== kw)
+                        )
+                      }
+                      className="hover:text-white"
+                    >
+                      ✕
+                    </button>
+                  </span>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={newNegativeKeyword}
+                  onChange={(e) => setNewNegativeKeyword(e.target.value)}
+                  placeholder="Add excluded keyword (e.g., Manager, Principal)"
+                  className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white flex-1"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (newNegativeKeyword.trim()) {
+                      setNegativeKeywords([
+                        ...negativeKeywords,
+                        newNegativeKeyword.trim(),
+                      ]);
+                      setNewNegativeKeyword("");
+                    }
+                  }}
+                  className="px-3 py-1.5 rounded-lg text-xs bg-slate-800 text-white"
+                >
+                  + Exclude
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 mb-1">
+              LLM Fit Scoring Guidance Notes
+            </label>
+            <input
+              type="text"
+              value={naturalLanguageNotes}
+              onChange={(e) => setNaturalLanguageNotes(e.target.value)}
+              placeholder="e.g., Prioritize product-focused full-stack TypeScript/Python roles; avoid pure DevOps or embedded C++."
+              className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white"
+            />
+          </div>
+
+          <button
+            type="submit"
+            className="px-4 py-2 rounded-lg text-xs font-semibold bg-emerald-500 text-slate-950 hover:bg-emerald-400 transition"
+          >
+            Save Discovery &amp; Location Preferences
+          </button>
+        </form>
+      </section>
+
+      {/* 3. Tailoring Guardrails & Constraint Configuration (FR-1.3) */}
       <section className="bg-slate-900/80 border border-slate-800 rounded-xl p-6 space-y-5">
         <h2 className="text-lg font-bold text-white">
-          2. Deterministic Tailoring Guardrails
+          3. Deterministic Tailoring Guardrails
         </h2>
 
         <form onSubmit={handleSaveGuardrails} className="space-y-5">

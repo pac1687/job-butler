@@ -10,7 +10,7 @@ import logging
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, Set
+from typing import Any, Dict, List, Optional, Set
 import psycopg
 from pypdf import PdfReader
 
@@ -20,7 +20,7 @@ from worker.lease import LeaseCoordinator
 from worker.preflight import check_lm_studio_health, enforce_preflight_or_exit
 from worker.publisher import ArtifactPublisher
 from worker.ranker import SemanticRanker
-from worker.schemas import ScrapedJob
+from worker.schemas import JobEvaluationResult, ScrapedJob
 from worker.synthesizer import JobSynthesizer
 from worker.typesetter import TypstTypesetter
 
@@ -29,6 +29,49 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("worker.main")
+
+DEFAULT_ATS_BOARDS: Dict[str, List[str]] = {
+    "greenhouse": [
+        "vercel",
+        "cloudflare",
+        "stripe",
+        "datadog",
+        "discord",
+        "figma",
+        "coinbase",
+        "airbnb",
+        "brex",
+        "gusto",
+        "retool",
+        "cockroachlabs",
+        "temporal",
+        "planetscale",
+        "netlify",
+        "gitlab",
+        "twilio",
+    ],
+    "lever": [
+        "palantir",
+        "spotify",
+        "zoox",
+        "plaid",
+    ],
+    "ashby": [
+        "ramp",
+        "linear",
+        "supabase",
+        "openai",
+        "anthropic",
+        "notion",
+        "perplexity",
+        "posthog",
+        "resend",
+        "cal",
+        "railway",
+        "clerk",
+        "langfuse",
+    ],
+}
 
 CLAIM_NEXT_TASK_SQL = """
 SELECT id, job_id, task_type, payload
@@ -79,15 +122,60 @@ def _load_pipeline_state(conn: Any) -> Dict[str, Any]:
         )
 
         cur.execute(
-            "SELECT positive_titles, negative_title_keywords, natural_language_notes, min_semantic_score FROM job_preferences ORDER BY id DESC LIMIT 1;"
+            "SELECT positive_titles, negative_title_keywords, natural_language_notes, min_semantic_score, ats_boards FROM job_preferences ORDER BY id DESC LIMIT 1;"
         )
         pref_row = cur.fetchone()
+        raw_boards = (pref_row[4] if pref_row and len(pref_row) > 4 else None) or {}
+        if not isinstance(raw_boards, dict):
+            raw_boards = {}
+
+        # Upgrade legacy 5-board seed to the expanded 34-company default board set unless customized
+        is_legacy_seed = (
+            raw_boards.get("greenhouse") == ["vercel", "supabase", "cloudflare"]
+            and raw_boards.get("lever") == ["linear"]
+        )
+        ats_boards: Dict[str, List[str]] = {
+            "greenhouse": (
+                DEFAULT_ATS_BOARDS["greenhouse"]
+                if is_legacy_seed or not raw_boards.get("greenhouse")
+                else list(raw_boards.get("greenhouse", []))
+            ),
+            "lever": (
+                DEFAULT_ATS_BOARDS["lever"]
+                if is_legacy_seed or "lever" not in raw_boards
+                else list(raw_boards.get("lever", []))
+            ),
+            "ashby": (
+                DEFAULT_ATS_BOARDS["ashby"]
+                if is_legacy_seed or not raw_boards.get("ashby")
+                else list(raw_boards.get("ashby", []))
+            ),
+        }
+
+        profile_location = str((master_profile.get("basics") or {}).get("location") or "").strip()
+        configured_locs = raw_boards.get("preferred_locations")
+        if isinstance(configured_locs, list):
+            preferred_locations = [str(x).strip() for x in configured_locs if str(x).strip()]
+        elif profile_location:
+            preferred_locations = [profile_location]
+        else:
+            preferred_locations = []
+
+        allow_remote = bool(raw_boards.get("allow_remote", True))
+        max_per_company = int(raw_boards.get("max_per_company", 2))
+        enable_tier2 = bool(raw_boards.get("enable_tier2", True))
+
         preferences = (
             {
                 "positive_titles": pref_row[0],
                 "negative_title_keywords": pref_row[1],
                 "natural_language_notes": pref_row[2] or "",
                 "min_semantic_score": float(pref_row[3] or 0.70),
+                "ats_boards": ats_boards,
+                "preferred_locations": preferred_locations,
+                "allow_remote": allow_remote,
+                "max_per_company": max_per_company,
+                "enable_tier2": enable_tier2,
             }
             if pref_row
             else {
@@ -95,6 +183,11 @@ def _load_pipeline_state(conn: Any) -> Dict[str, Any]:
                 "negative_title_keywords": ["Manager", "Staff", "Director"],
                 "natural_language_notes": "",
                 "min_semantic_score": 0.70,
+                "ats_boards": DEFAULT_ATS_BOARDS,
+                "preferred_locations": [profile_location] if profile_location else [],
+                "allow_remote": True,
+                "max_per_company": 2,
+                "enable_tier2": True,
             }
         )
 
@@ -161,10 +254,51 @@ def process_single_job(
     )
 
 
+def discover_and_score_single_job(
+    conn: Any,
+    job: ScrapedJob,
+    semantic_score: float,
+    state: Dict[str, Any],
+    synthesizer: JobSynthesizer,
+    publisher: ArtifactPublisher,
+) -> str:
+    """
+    Stage 1 (Fast Discovery): Evaluates job fit via LM Studio and persists the match to Neon
+    without compiling Resume/Cover Letter PDFs yet. User can select which matches to tailor in a batch.
+    """
+    logger.info(
+        "Evaluating job fit via LM Studio for '%s' at '%s' (%s)...",
+        job.title,
+        job.company,
+        job.location,
+    )
+    evaluation = synthesizer.evaluate_job_fit(
+        job=job,
+        master_profile=state["master_profile"],
+        natural_language_notes=state["preferences"].get("natural_language_notes", ""),
+    )
+    logger.info(
+        "Saved match '%s' at '%s' (fit_score=%.1f, semantic_score=%.2f) — ready for on-demand PDF tailoring.",
+        job.title,
+        job.company,
+        evaluation.fit_score,
+        semantic_score,
+    )
+    return publisher.persist_evaluated_match(
+        conn=conn,
+        job=job,
+        semantic_score=semantic_score,
+        evaluation=evaluation,
+        resume_storage_key=None,
+        cover_letter_storage_key=None,
+        payload_snapshot={"status": "PENDING_TAILORING"},
+    )
+
+
 def run_nightly_batch(config: WorkerConfig, max_jobs: Optional[int] = None) -> None:
     """
-    Executes the batch job discovery & tailoring pipeline with pre-flight check,
-    distributed lease, retention purge, and short-lived DB connections.
+    Executes the batch job discovery & fit scoring pipeline with pre-flight check,
+    distributed lease, retention purge, location/remote filtering, and company diversity cap.
     """
     effective_max_jobs = max(1, int(max_jobs if max_jobs is not None else config.max_jobs_per_batch))
     if not check_lm_studio_health(config.lm_studio_base_url):
@@ -182,19 +316,28 @@ def run_nightly_batch(config: WorkerConfig, max_jobs: Optional[int] = None) -> N
         collector = JobCollector()
         ranker = SemanticRanker(config.embedding_model_name)
         synthesizer = JobSynthesizer(config=config, ranker=ranker)
-        typesetter = TypstTypesetter()
         publisher = ArtifactPublisher(config=config)
 
-        ats_boards = {
-            "greenhouse": ["vercel", "cloudflare", "stripe"],
-            "lever": [],
-            "ashby": ["ramp", "linear", "supabase"],
-        }
-        logger.info("Scraping Tier-1 ATS boards (%s)...", ats_boards)
+        ats_boards = state["preferences"].get("ats_boards") or DEFAULT_ATS_BOARDS
+        preferred_locations = state["preferences"].get("preferred_locations") or []
+        allow_remote = bool(state["preferences"].get("allow_remote", True))
+        max_per_company = int(state["preferences"].get("max_per_company", 2))
+        enable_tier2 = bool(state["preferences"].get("enable_tier2", True))
+
+        logger.info(
+            "Scraping Tier-1 ATS boards (%d Greenhouse, %d Lever, %d Ashby) + Tier-2=%s...",
+            len(ats_boards.get("greenhouse", [])),
+            len(ats_boards.get("lever", [])),
+            len(ats_boards.get("ashby", [])),
+            enable_tier2,
+        )
         scraped = collector.collect_all(
             ats_boards=ats_boards,
             positive_titles=state["preferences"]["positive_titles"],
             existing_hashes=state["existing_hashes"],
+            enable_tier2=enable_tier2,
+            preferred_locations=preferred_locations,
+            allow_remote=allow_remote,
         )
         profile_summary = json.dumps(state["master_profile"].get("basics", {}))
         ranked = ranker.filter_and_rank(
@@ -203,34 +346,38 @@ def run_nightly_batch(config: WorkerConfig, max_jobs: Optional[int] = None) -> N
             negative_keywords=state["preferences"]["negative_title_keywords"],
             profile_summary_text=profile_summary,
             min_semantic_score=state["preferences"]["min_semantic_score"],
+            preferred_locations=preferred_locations,
+            allow_remote=allow_remote,
+            max_per_company=max_per_company,
         )
 
         top_candidates = ranked[:effective_max_jobs]
         logger.info(
-            "Discovery batch scraped %d new jobs; %d passed semantic filter (>= %.2f). Processing top %d matches (max_jobs=%d)...",
+            "Discovery batch scraped %d new jobs; %d passed location + semantic + company-diversity filter (>= %.2f, max %d/company). Scoring top %d matches (max_jobs=%d)...",
             len(scraped),
             len(ranked),
             state["preferences"]["min_semantic_score"],
+            max_per_company,
             len(top_candidates),
             effective_max_jobs,
         )
         for idx, (job, sem_score) in enumerate(top_candidates, start=1):
             logger.info(
-                "[Batch %d/%d] Tailoring '%s' at '%s' (semantic_score=%.2f)...",
+                "[Discovery %d/%d] Scoring '%s' at '%s' (%s, semantic_score=%.2f)...",
                 idx,
                 len(top_candidates),
                 job.title,
                 job.company,
+                job.location,
                 sem_score,
             )
             with psycopg.connect(config.database_url) as job_conn:
-                process_single_job(
+                discover_and_score_single_job(
                     conn=job_conn,
                     job=job,
                     semantic_score=sem_score,
                     state=state,
                     synthesizer=synthesizer,
-                    typesetter=typesetter,
                     publisher=publisher,
                 )
     finally:
@@ -320,6 +467,7 @@ def poll_task_queue_once(config: WorkerConfig) -> bool:
                         )
                     conn.commit()
             else:
+                existing_eval: Optional[JobEvaluationResult] = None
                 with psycopg.connect(config.database_url) as conn:
                     state = _load_pipeline_state(conn)
                     target_url = str(payload.get("url") or "")
@@ -344,14 +492,32 @@ def poll_task_queue_once(config: WorkerConfig) -> bool:
                                     description_text=jrow[8],
                                     salary_range=jrow[9],
                                 )
+                            cur.execute(
+                                "SELECT fit_score, fit_rationale, matched_skills, missing_skills FROM evaluated_matches WHERE job_id = %s ORDER BY created_at DESC LIMIT 1;",
+                                (job_id,),
+                            )
+                            mrow = cur.fetchone()
+                            if mrow:
+                                existing_eval = JobEvaluationResult(
+                                    fit_score=float(mrow[0]),
+                                    fit_rationale=str(mrow[1]),
+                                    matched_skills=list(mrow[2] or []),
+                                    missing_skills=list(mrow[3] or []),
+                                )
                     if job is None:
                         raise ValueError("Unable to resolve job record or scrape URL for task.")
 
-                # Run LLM evaluation, tailoring, and Typst compilation outside the DB transaction
-                evaluation = synthesizer.evaluate_job_fit(
+                # Reuse existing fit evaluation when tailoring an already-scored match; otherwise evaluate now
+                evaluation = existing_eval or synthesizer.evaluate_job_fit(
                     job=job,
                     master_profile=state["master_profile"],
                     natural_language_notes=state["preferences"].get("natural_language_notes", ""),
+                )
+                logger.info(
+                    "Tailoring resume bullets and cover letter for '%s' at '%s' (fit_score=%.1f)...",
+                    job.title,
+                    job.company,
+                    evaluation.fit_score,
                 )
                 payload_snapshot = synthesizer.build_tailored_payload(
                     job=job,
@@ -361,6 +527,7 @@ def poll_task_queue_once(config: WorkerConfig) -> bool:
                 )
                 with tempfile.TemporaryDirectory() as tmp_dir:
                     tmp_path = Path(tmp_dir)
+                    logger.info("Compiling single-page Typst PDFs for '%s' at '%s'...", job.title, job.company)
                     resume_pdf = typesetter.compile_resume_with_auto_trim(
                         payload_snapshot, tmp_path / "resume.pdf"
                     )
@@ -375,15 +542,27 @@ def poll_task_queue_once(config: WorkerConfig) -> bool:
                     )
 
                 with psycopg.connect(config.database_url) as conn:
-                    publisher.persist_evaluated_match(
-                        conn=conn,
-                        job=job,
-                        semantic_score=0.85,
-                        evaluation=evaluation,
-                        resume_storage_key=storage_keys.get("resume_storage_key"),
-                        cover_letter_storage_key=storage_keys.get("cover_letter_storage_key"),
-                        payload_snapshot=payload_snapshot,
+                    updated_match_id = (
+                        publisher.update_match_artifacts(
+                            conn=conn,
+                            job_id=str(job_id),
+                            resume_storage_key=storage_keys.get("resume_storage_key"),
+                            cover_letter_storage_key=storage_keys.get("cover_letter_storage_key"),
+                            payload_snapshot=payload_snapshot,
+                        )
+                        if job_id and existing_eval is not None
+                        else None
                     )
+                    if not updated_match_id:
+                        publisher.persist_evaluated_match(
+                            conn=conn,
+                            job=job,
+                            semantic_score=0.85,
+                            evaluation=evaluation,
+                            resume_storage_key=storage_keys.get("resume_storage_key"),
+                            cover_letter_storage_key=storage_keys.get("cover_letter_storage_key"),
+                            payload_snapshot=payload_snapshot,
+                        )
                     with conn.cursor() as cur:
                         cur.execute(
                             "UPDATE job_task_queue SET status = 'COMPLETED', error_message = NULL, updated_at = NOW() WHERE id = %s;",

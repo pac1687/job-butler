@@ -137,16 +137,18 @@ class JobCollector:
     def fetch_tier2_jobspy(
         self,
         search_terms: List[str],
+        location: str = "United States",
+        is_remote: bool = True,
         results_wanted: int = 15,
         max_retries: int = 2,
     ) -> List[ScrapedJob]:
         """
-        Tier-2 Aggregator Fallback using JobSpy with exponential backoff and jittered delays (2-5s).
+        Tier-2 Aggregator Discovery using JobSpy with exponential backoff and jittered delays (2-5s).
         """
         try:
             from jobspy import scrape_jobs  # type: ignore
         except ImportError:
-            logger.warning("python-jobspy is not installed; skipping Tier-2 fallback.")
+            logger.warning("python-jobspy is not installed; skipping Tier-2 aggregator discovery.")
             return []
 
         collected: List[ScrapedJob] = []
@@ -160,8 +162,10 @@ class JobCollector:
                     df = scrape_jobs(
                         site_name=["indeed", "linkedin"],
                         search_term=term,
+                        location=location,
                         results_wanted=results_wanted,
-                        is_remote=True,
+                        is_remote=is_remote,
+                        linkedin_fetch_description=True,
                     )
                     if df is not None and not df.empty:
                         for _, row in df.iterrows():
@@ -169,9 +173,20 @@ class JobCollector:
                             company = str(row.get("company") or "Unknown").strip()
                             raw_desc = str(row.get("description") or "").strip()
                             url = str(row.get("job_url") or "").strip()
+                            if not raw_desc or raw_desc.lower() == "nan":
+                                raw_desc = f"{title} at {company}"
                             cleaned = clean_job_description(raw_desc)
                             if not title or not cleaned or not url:
                                 continue
+                            loc_str = str(row.get("location") or "").strip()
+                            if not loc_str or loc_str.lower() == "nan":
+                                loc_str = "Remote" if is_remote else location
+                            row_remote = bool(
+                                row.get("is_remote")
+                                or is_remote
+                                or "remote" in loc_str.lower()
+                                or "remote" in title.lower()
+                            )
                             content_hash = compute_content_hash(title, company, cleaned)
                             collected.append(
                                 ScrapedJob(
@@ -179,8 +194,8 @@ class JobCollector:
                                     source_id=str(row.get("id") or content_hash[:16]),
                                     title=title,
                                     company=company,
-                                    location=str(row.get("location") or "Remote"),
-                                    is_remote=True,
+                                    location=loc_str,
+                                    is_remote=row_remote,
                                     url=url,
                                     content_hash=content_hash,
                                     description_text=cleaned,
@@ -274,8 +289,10 @@ class JobCollector:
         positive_titles: List[str],
         existing_hashes: Set[str],
         enable_tier2: bool = True,
+        preferred_locations: Optional[List[str]] = None,
+        allow_remote: bool = True,
     ) -> List[ScrapedJob]:
-        """Executes Tier-1 ATS scraping and optional Tier-2 fallback, returning deduplicated jobs."""
+        """Executes Tier-1 ATS scraping and Tier-2 JobSpy discovery, returning deduplicated jobs."""
         raw_jobs: List[ScrapedJob] = []
 
         for board in ats_boards.get("greenhouse", []):
@@ -285,8 +302,25 @@ class JobCollector:
         for board in ats_boards.get("ashby", []):
             raw_jobs.extend(self.fetch_ashby_board(board))
 
-        if enable_tier2 and not raw_jobs and positive_titles:
-            raw_jobs.extend(self.fetch_tier2_jobspy(positive_titles[:3]))
+        if enable_tier2 and positive_titles:
+            search_loc = (
+                preferred_locations[0]
+                if preferred_locations and not allow_remote
+                else "United States"
+            )
+            logger.info(
+                "Running Tier-2 JobSpy discovery for titles=%s (location='%s', is_remote=%s)...",
+                positive_titles[:3],
+                search_loc,
+                allow_remote,
+            )
+            raw_jobs.extend(
+                self.fetch_tier2_jobspy(
+                    positive_titles[:3],
+                    location=search_loc,
+                    is_remote=allow_remote,
+                )
+            )
 
         return self.deduplicate_jobs(raw_jobs, existing_hashes)
 

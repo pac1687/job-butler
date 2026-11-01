@@ -6,6 +6,7 @@ import { getSql, type EvaluatedJobMatch } from "@/lib/db";
 import { DEMO_MATCHES } from "@/lib/mock-data";
 import {
   enqueueBatchDiscoveryAction,
+  enqueueBatchTailorAction,
   enqueueJobUrlAction,
   updateMatchStatusAction,
 } from "./actions";
@@ -79,6 +80,7 @@ export default async function DashboardPage() {
           onUpdateStatus={updateMatchStatusAction}
           onEnqueueUrl={enqueueJobUrlAction}
           onRunBatchDiscovery={enqueueBatchDiscoveryAction}
+          onBatchTailorJobs={enqueueBatchTailorAction}
         />
       </main>
     </div>

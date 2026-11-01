@@ -9,10 +9,11 @@ interface JobMatchFeedProps {
   onUpdateStatus?: (matchId: string, status: MatchStatus) => Promise<void>;
   onEnqueueUrl?: (url: string) => Promise<void>;
   onRunBatchDiscovery?: (maxJobs: number) => Promise<void>;
+  onBatchTailorJobs?: (jobIds: string[]) => Promise<void>;
 }
 
 const STATUS_OPTIONS: MatchStatus[] = ["NEW_MATCH", "SAVED", "APPLIED", "ARCHIVED"];
-const BATCH_SIZE_OPTIONS: number[] = [3, 5, 10, 15, 25];
+const BATCH_SIZE_OPTIONS: number[] = [5, 10, 15, 20, 30];
 
 export function JobMatchFeed({
   initialMatches,
@@ -20,6 +21,7 @@ export function JobMatchFeed({
   onUpdateStatus,
   onEnqueueUrl,
   onRunBatchDiscovery,
+  onBatchTailorJobs,
 }: JobMatchFeedProps) {
   const [matches, setMatches] = useState<EvaluatedJobMatch[]>(initialMatches);
   const [activeFilter, setActiveFilter] = useState<string>("ALL");
@@ -27,9 +29,12 @@ export function JobMatchFeed({
   const [showQueueModal, setShowQueueModal] = useState(false);
   const [customUrl, setCustomUrl] = useState("");
   const [queueMessage, setQueueMessage] = useState<string | null>(null);
-  const [batchMaxJobs, setBatchMaxJobs] = useState<number>(5);
+  const [batchMaxJobs, setBatchMaxJobs] = useState<number>(10);
   const [discoveryNotice, setDiscoveryNotice] = useState<string | null>(null);
   const [runningDiscovery, setRunningDiscovery] = useState(false);
+  const [selectedJobIds, setSelectedJobIds] = useState<string[]>([]);
+  const [queuedTailorJobIds, setQueuedTailorJobIds] = useState<string[]>([]);
+  const [tailoringBatch, setTailoringBatch] = useState(false);
   const [loadingArtifactId, setLoadingArtifactId] = useState<string | null>(null);
 
   const filteredMatches = matches.filter((m) =>
@@ -105,10 +110,57 @@ export function JobMatchFeed({
         });
       }
       setDiscoveryNotice(
-        `Discovery scrape queued (max ${batchMaxJobs} jobs)! Your local queue-listener will fetch, rank, score, and tailor the top matching roles on its next 10s poll.`
+        `Discovery scrape queued (max ${batchMaxJobs} jobs across diverse companies)! Your local queue-listener will scrape, filter by location/remote, and score fit without generating PDFs yet.`
       );
     } finally {
       setRunningDiscovery(false);
+    }
+  }
+
+  function toggleSelectJob(jobId: string) {
+    if (readOnly) return;
+    setSelectedJobIds((prev) =>
+      prev.includes(jobId) ? prev.filter((id) => id !== jobId) : [...prev, jobId]
+    );
+  }
+
+  function handleSelectAllUntailored() {
+    if (readOnly) return;
+    const untailoredIds = filteredMatches
+      .filter((m) => !m.resume_storage_key)
+      .map((m) => m.job_id);
+    setSelectedJobIds(untailoredIds);
+  }
+
+  async function handleTailorJobs(jobIds: string[]) {
+    if (readOnly || jobIds.length === 0) return;
+    try {
+      setTailoringBatch(true);
+      setDiscoveryNotice(
+        `Enqueuing ${jobIds.length} selected role(s) for Resume & Cover Letter PDF generation...`
+      );
+      if (onBatchTailorJobs) {
+        await onBatchTailorJobs(jobIds);
+      } else {
+        for (const jobId of jobIds) {
+          await fetch("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              job_id: jobId,
+              task_type: "REGENERATE_RESUME",
+              payload: {},
+            }),
+          });
+        }
+      }
+      setQueuedTailorJobIds((prev) => Array.from(new Set([...prev, ...jobIds])));
+      setSelectedJobIds((prev) => prev.filter((id) => !jobIds.includes(id)));
+      setDiscoveryNotice(
+        `Queued ${jobIds.length} role(s) for 1-page Typst Resume & Cover Letter PDF compilation! Refresh in ~35s per role as your local worker completes them.`
+      );
+    } finally {
+      setTailoringBatch(false);
     }
   }
 
@@ -134,6 +186,27 @@ export function JobMatchFeed({
 
         {!readOnly && (
           <div className="flex flex-wrap items-center gap-2">
+            {filteredMatches.some((m) => !m.resume_storage_key) && (
+              <button
+                type="button"
+                onClick={handleSelectAllUntailored}
+                className="px-3 py-2 rounded-lg text-xs font-semibold bg-slate-800 text-slate-200 hover:bg-slate-700 border border-slate-700 transition"
+              >
+                Select All Untailored
+              </button>
+            )}
+            {selectedJobIds.length > 0 && (
+              <button
+                type="button"
+                onClick={() => handleTailorJobs(selectedJobIds)}
+                disabled={tailoringBatch}
+                className="px-3.5 py-2 rounded-lg text-xs font-semibold bg-amber-500 text-slate-950 hover:bg-amber-400 disabled:opacity-50 transition"
+              >
+                {tailoringBatch
+                  ? "Queuing PDFs..."
+                  : `✨ Generate PDFs for Selected (${selectedJobIds.length})`}
+              </button>
+            )}
             <div className="flex items-center bg-slate-950 border border-slate-700 rounded-lg overflow-hidden">
               <label
                 htmlFor="batch-max-jobs"
@@ -203,34 +276,58 @@ export function JobMatchFeed({
               className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 space-y-4 hover:border-slate-700 transition"
             >
               <div className="flex flex-wrap items-start justify-between gap-4">
-                <div>
-                  <div className="flex items-center gap-2.5 flex-wrap">
-                    <h2 className="text-lg font-bold text-white">{match.title}</h2>
-                    <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-medium">
-                      {match.company}
-                    </span>
-                    {match.is_remote && (
-                      <span className="text-xs px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800/60">
-                        Remote
+                <div className="flex items-start gap-3">
+                  {!readOnly && (
+                    <input
+                      type="checkbox"
+                      aria-label={`Select ${match.title} at ${match.company} for batch PDF generation`}
+                      checked={selectedJobIds.includes(match.job_id)}
+                      onChange={() => toggleSelectJob(match.job_id)}
+                      className="mt-1.5 h-4 w-4 rounded border-slate-600 bg-slate-950 text-emerald-500 focus:ring-emerald-500 cursor-pointer"
+                    />
+                  )}
+                  <div>
+                    <div className="flex items-center gap-2.5 flex-wrap">
+                      <h2 className="text-lg font-bold text-white">{match.title}</h2>
+                      <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-medium">
+                        {match.company}
                       </span>
-                    )}
-                    {match.salary_range && (
-                      <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-amber-300 font-mono">
-                        {match.salary_range}
-                      </span>
-                    )}
+                      {match.is_remote && (
+                        <span className="text-xs px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800/60">
+                          Remote
+                        </span>
+                      )}
+                      {match.salary_range && (
+                        <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-amber-300 font-mono">
+                          {match.salary_range}
+                        </span>
+                      )}
+                      {match.resume_storage_key ? (
+                        <span className="text-xs px-2 py-0.5 rounded bg-indigo-950/90 text-indigo-300 border border-indigo-800/60">
+                          ✓ PDFs Ready
+                        </span>
+                      ) : queuedTailorJobIds.includes(match.job_id) ? (
+                        <span className="text-xs px-2 py-0.5 rounded bg-amber-950/90 text-amber-300 border border-amber-800/60">
+                          ⏳ Queued for PDF Tailoring
+                        </span>
+                      ) : (
+                        <span className="text-xs px-2 py-0.5 rounded bg-slate-800/80 text-slate-400 border border-slate-700">
+                          Discovered (No PDFs Yet)
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-slate-400 mt-1">
+                      {match.location} &bull;{" "}
+                      <a
+                        href={match.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-indigo-400 hover:underline"
+                      >
+                        View Original Posting &rarr;
+                      </a>
+                    </p>
                   </div>
-                  <p className="text-xs text-slate-400 mt-1">
-                    {match.location} &bull;{" "}
-                    <a
-                      href={match.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-indigo-400 hover:underline"
-                    >
-                      View Original Posting &rarr;
-                    </a>
-                  </p>
                 </div>
 
                 {/* Fit & Semantic Score Badges */}
@@ -282,33 +379,58 @@ export function JobMatchFeed({
                 )}
               </div>
 
-              {/* Action Bar: Presigned PDFs, Audit Snapshot Viewer, Status Mutation */}
+              {/* Action Bar: Presigned PDFs, On-Demand Tailoring, Audit Snapshot Viewer, Status Mutation */}
               <div className="pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    onClick={() => handleOpenArtifact(match.id, "resume")}
-                    disabled={loadingArtifactId === `${match.id}:resume`}
-                    className="px-3 py-1.5 rounded-md text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 transition"
-                  >
-                    {loadingArtifactId === `${match.id}:resume`
-                      ? "Signing..."
-                      : "📄 Tailored Resume PDF"}
-                  </button>
-                  <button
-                    onClick={() => handleOpenArtifact(match.id, "cover_letter")}
-                    disabled={loadingArtifactId === `${match.id}:cover_letter`}
-                    className="px-3 py-1.5 rounded-md text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 transition"
-                  >
-                    {loadingArtifactId === `${match.id}:cover_letter`
-                      ? "Signing..."
-                      : "✉️ Cover Letter PDF"}
-                  </button>
-                  <button
-                    onClick={() => setSnapshotModalMatch(match)}
-                    className="px-3 py-1.5 rounded-md text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-indigo-300 border border-indigo-800/60 transition"
-                  >
-                    🔍 Audit Snapshot JSON
-                  </button>
+                  {match.resume_storage_key ? (
+                    <>
+                      <button
+                        onClick={() => handleOpenArtifact(match.id, "resume")}
+                        disabled={loadingArtifactId === `${match.id}:resume`}
+                        className="px-3 py-1.5 rounded-md text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 transition"
+                      >
+                        {loadingArtifactId === `${match.id}:resume`
+                          ? "Signing..."
+                          : "📄 Tailored Resume PDF"}
+                      </button>
+                      <button
+                        onClick={() => handleOpenArtifact(match.id, "cover_letter")}
+                        disabled={loadingArtifactId === `${match.id}:cover_letter`}
+                        className="px-3 py-1.5 rounded-md text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 transition"
+                      >
+                        {loadingArtifactId === `${match.id}:cover_letter`
+                          ? "Signing..."
+                          : "✉️ Cover Letter PDF"}
+                      </button>
+                      <button
+                        onClick={() => setSnapshotModalMatch(match)}
+                        className="px-3 py-1.5 rounded-md text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-indigo-300 border border-indigo-800/60 transition"
+                      >
+                        🔍 Audit Snapshot JSON
+                      </button>
+                      {!readOnly && (
+                        <button
+                          onClick={() => handleTailorJobs([match.job_id])}
+                          disabled={tailoringBatch}
+                          className="px-2.5 py-1.5 rounded-md text-xs font-medium bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 transition"
+                        >
+                          🔄 Regenerate PDFs
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    !readOnly && (
+                      <button
+                        onClick={() => handleTailorJobs([match.job_id])}
+                        disabled={tailoringBatch || queuedTailorJobIds.includes(match.job_id)}
+                        className="px-3.5 py-1.5 rounded-md text-xs font-semibold bg-amber-500/90 hover:bg-amber-400 text-slate-950 disabled:opacity-50 transition"
+                      >
+                        {queuedTailorJobIds.includes(match.job_id)
+                          ? "⏳ Queued for Worker..."
+                          : "✨ Generate Resume & Cover Letter PDFs"}
+                      </button>
+                    )
+                  )}
                 </div>
 
                 <div className="flex items-center gap-2">
