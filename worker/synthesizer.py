@@ -89,6 +89,10 @@ class SingleBulletResponse(BaseModel):
     bullet: str = Field(...)
 
 
+class ConsolidatedBulletsResponse(BaseModel):
+    bullets: List[str] = Field(..., min_length=1, max_length=5)
+
+
 class HeadlineResponse(BaseModel):
     title: str = Field(..., max_length=70)
 
@@ -550,6 +554,88 @@ class JobSynthesizer:
         )
         return outcome.final_bullet
 
+    def consolidate_role_bullets(
+        self,
+        source_bullets: Sequence[str],
+        target_count: int = 1,
+        role_title: str = "",
+        company: str = "",
+        job_title: str = "",
+        forbidden_terms: Sequence[str] = (),
+        protected_metrics: Sequence[str] = (),
+    ) -> List[str]:
+        """
+        Consolidates `n` source accomplishments from a role into `target_count` (`o`)
+        cohesive, high-impact resume bullets tailored to the target job.
+        Does not pre-slice or discard accomplishments prior to synthesis; the LLM synthesizes
+        all verified accomplishments across `target_count` thematic bullets.
+        """
+        valid_bullets = [b.strip() for b in source_bullets if b and b.strip()]
+        if not valid_bullets:
+            return []
+        if len(valid_bullets) <= target_count:
+            return valid_bullets
+
+        if target_count <= 0:
+            target_count = 1
+
+        formatted_source = "\n".join(f"{i+1}. {b}" for i, b in enumerate(valid_bullets))
+
+        system_prompt = (
+            "You are an expert executive resume writer. The candidate has these verified accomplishments "
+            f"for the role '{role_title}' at '{company}':\n"
+            f"{formatted_source}\n\n"
+            f"Consolidate these {len(valid_bullets)} accomplishments into EXACTLY {target_count} coherent, high-impact resume bullet(s) "
+            f"tailored for a candidate targeting the role '{job_title}'.\n"
+            "CRITICAL COHERENCE & SYNTHESIS RULES:\n"
+            f"1. OUTPUT COUNT: Return exactly {target_count} bullet(s) in JSON under key 'bullets'.\n"
+            "2. THEMATIC SYNTHESIS: Each bullet should synthesize related accomplishments (e.g. for 2 bullets: "
+            "one bullet focusing on data/API/webhook integrations, and one bullet focusing on platform resilience, visualizations, and tooling).\n"
+            "3. NO FIRST-BULLET BIAS: Synthesize across all accomplishments so core capabilities (e.g. real-time webhooks, data pipelines, integrations) are faithfully represented.\n"
+            "4. NO 'WHILE' CONJUNCTIONS: NEVER use 'while' to connect accomplishments (it falsely implies temporal concurrency). "
+            "Use a semicolon ('; ') with parallel past-tense verbs (e.g. 'Engineered X...; authored Y...') or a compound predicate (', and [past verb]').\n"
+            "5. NO MID-SENTENCE HEADERS: If using topic headers (e.g. 'Integrations & Webhooks: '), place the header ONLY at the very beginning of the bullet. Never put a topic header in the middle of a sentence.\n"
+            "6. ACCURACY & METRICS: Preserve all numbers, metrics, versions, and named technologies verbatim (e.g. PGP, BestCrypt, CoffeeScript, Node, Angular, D3.js, Apex, Salesforce). Do not invent any tools or metrics.\n"
+            "7. LENGTH: Each bullet must be concise (between 120 and 195 characters), ending with a period.\n"
+            f"8. FORBIDDEN TERMS: Never include any of these terms: {list(forbidden_terms)}.\n"
+            'Return ONLY JSON: {"bullets": ["bullet 1", ...]}'
+        )
+        user_prompt = json.dumps(
+            {
+                "role": role_title,
+                "company": company,
+                "target_job_title": job_title,
+                "target_bullet_count": target_count,
+            }
+        )
+        try:
+            data = self._chat_json(
+                system_prompt,
+                user_prompt,
+                max_tokens=1536,
+                schema_model=ConsolidatedBulletsResponse,
+            )
+            raw_bullets = data.get("bullets") or []
+            cleaned_bullets = [
+                replace_while_conjunction(str(b).strip())
+                for b in raw_bullets
+                if str(b).strip()
+            ]
+            if len(cleaned_bullets) == target_count:
+                return cleaned_bullets
+        except Exception as exc:
+            logger.warning("consolidate_role_bullets LLM call failed (%s); using fallback.", exc)
+
+        # Deterministic fallback:
+        if target_count == 1:
+            return [merge_two_bullets(valid_bullets[0], valid_bullets[1])]
+        if target_count == 2 and len(valid_bullets) >= 4:
+            return [
+                merge_two_bullets(valid_bullets[0], valid_bullets[1]),
+                merge_two_bullets(valid_bullets[2], valid_bullets[3]),
+            ]
+        return list(valid_bullets[:target_count])
+
     def consolidate_bullets(
         self,
         bullets_to_combine: Sequence[str] = (),
@@ -560,78 +646,18 @@ class JobSynthesizer:
         forbidden_terms: Sequence[str] = (),
         protected_metrics: Sequence[str] = (),
     ) -> str:
-        """
-        Synthesizes multiple accomplishments into a single coherent, high-impact resume bullet point
-        tailored to the target job.
-        Does not assume any accomplishment is inherently more important.
-        Unifies scope into a grammatically natural compound sentence with no mid-sentence headers.
-        """
+        """Backwards-compatible convenience method to consolidate accomplishments into 1 bullet."""
         raw_list = list(bullets_to_combine) if bullets_to_combine else list(source_bullets)
-        valid_bullets = [b.strip() for b in raw_list if b and b.strip()]
-        if not valid_bullets:
-            return ""
-        if len(valid_bullets) == 1:
-            return valid_bullets[0]
-
-        b1, b2 = valid_bullets[0], valid_bullets[1]
-        header_match1 = LEADING_HEADER_REGEX.match(b1)
-        header_match2 = LEADING_HEADER_REGEX.match(b2)
-        h1 = header_match1.group(1).strip() if header_match1 else ""
-        h2 = header_match2.group(1).strip() if header_match2 else ""
-        clean_b1 = b1[header_match1.end():].strip() if header_match1 else b1
-        clean_b2 = b2[header_match2.end():].strip() if header_match2 else b2
-
-        header_instruction = ""
-        if h1 and h2:
-            header_instruction = f"If appropriate, unify the topics into a single concise header at the start (e.g. '{h1} & {h2}: ' or '{h1}: '). NEVER include a second header in the middle of the sentence."
-        elif h1:
-            header_instruction = f"Preserve the topic header '{h1}: ' at the start of the bullet. NEVER put a topic header in the middle of the sentence."
-
-        system_prompt = (
-            "You are an expert executive resume writer. The candidate has multiple accomplishments "
-            f"for the role '{role_title}' at '{company}'. Consolidate them into ONE coherent, high-impact resume bullet point "
-            f"tailored to the target job '{job_title}'. "
-            "CRITICAL COHERENCE RULES: "
-            "1. CONJUNCTIONS: NEVER use 'while' to connect distinct accomplishments (it falsely implies simultaneous concurrency). "
-            "Instead, connect independent accomplishments using a semicolon ('; ') with parallel past-tense verbs (e.g. 'Engineered X...; migrated Y...') or a coordinated conjunction (', and [past verb]'). "
-            "2. COHERENCE: The output MUST be a single, natural, grammatically unified sentence ending with a period. "
-            "3. NO FIRST-BULLET BIAS: Neither accomplishment is inherently more important; synthesize both to reflect the candidate's strongest capabilities for the target job. "
-            f"4. HEADERS: {header_instruction} "
-            "5. TRUTHFULNESS & METRICS: Preserve all numbers, metrics, versions, and named technologies verbatim (e.g. PGP, BestCrypt, rating systems, Node, React). Do not invent tools or metrics. "
-            "6. LENGTH: The final bullet must be concise (maximum 185 characters). "
-            f"7. FORBIDDEN TERMS: Never include any of these terms: {list(forbidden_terms)}. "
-            'Return ONLY JSON: {"bullet": "..."}'
-        )
-        user_prompt = json.dumps(
-            {
-                "role": role_title,
-                "company": company,
-                "target_job_title": job_title,
-                "accomplishment_a": clean_b1,
-                "accomplishment_b": clean_b2,
-            }
-        )
-        try:
-            data = self._chat_json(
-                system_prompt,
-                user_prompt,
-                max_tokens=1024,
-                schema_model=SingleBulletResponse,
-            )
-            candidate = str(data.get("bullet") or "").strip()
-            candidate = replace_while_conjunction(candidate)
-        except Exception as exc:
-            logger.warning("consolidate_bullets LLM call failed (%s); using heuristic fallback.", exc)
-            candidate = merge_two_bullets(b1, b2)
-
-        outcome = self.validator.validate_combined_bullet(
-            b1=b1,
-            b2=b2,
-            generated_bullet=candidate,
+        results = self.consolidate_role_bullets(
+            source_bullets=raw_list,
+            target_count=1,
+            role_title=role_title,
+            company=company,
+            job_title=job_title,
             forbidden_terms=forbidden_terms,
             protected_metrics=protected_metrics,
         )
-        return outcome.final_bullet
+        return results[0] if results else ""
 
     # Backwards-compatibility alias
     combine_bullets = consolidate_bullets
@@ -726,43 +752,63 @@ class JobSynthesizer:
             matched_skills=evaluation.matched_skills,
         )
 
-        # 3. Experience bullet ranking & constrained rephrasing
+        # 3. Experience bullet ranking & constrained rephrasing / consolidation
         tailored_experience: List[Dict[str, Any]] = []
-        for role in master_profile.get("experience", []):
+        for role_idx, role in enumerate(master_profile.get("experience", [])):
             source_bullets = role.get("bullets") or []
-            selected_bullets = self.select_nearest_bullets(
-                job_description=job.description_text,
-                source_bullets=source_bullets,
-                max_bullets=min(max_bullets, 4),
-            )
-            validated_bullets = [
-                self.rephrase_bullet_constrained(
-                    source_bullet=b,
-                    job_title=job.title,
-                    matched_skills=evaluation.matched_skills,
-                    forbidden_terms=forbidden_terms,
-                    protected_metrics=protected_metrics,
-                    allow_rephrasing=allow_rephrasing,
-                )
-                for b in selected_bullets
-            ]
+            if not source_bullets:
+                continue
 
-            consolidated_bullet = None
-            if len(source_bullets) >= 2:
-                consolidated_bullet = self.consolidate_bullets(
-                    bullets_to_combine=selected_bullets[:2],
+            # Determine appropriate bullet budget per role:
+            # - If max_bullets == 1, all roles get 1 bullet.
+            # - Role 0 (Current / lead role, e.g. Pushly): up to min(max_bullets, len(source_bullets), 4).
+            # - Mid-career roles with 3+ accomplishments (e.g. SoftVu, SelectQuote, US Engineering, TreviPay):
+            #   target 2 thematic consolidated bullets.
+            # - Early career roles (role_idx >= 6): target 1 bullet.
+            if max_bullets == 1:
+                target_bullets = 1
+            elif role_idx == 0:
+                target_bullets = min(max_bullets, len(source_bullets), 4)
+            elif role_idx <= 5 and len(source_bullets) >= 3:
+                target_bullets = min(max_bullets, 2)
+            elif role_idx >= 6:
+                target_bullets = min(1, len(source_bullets))
+            else:
+                target_bullets = min(len(source_bullets), 2)
+
+            if len(source_bullets) > target_bullets:
+                final_bullets = self.consolidate_role_bullets(
+                    source_bullets=source_bullets,
+                    target_count=target_bullets,
                     role_title=role.get("title", ""),
                     company=role.get("company", ""),
                     job_title=job.title,
                     forbidden_terms=forbidden_terms,
                     protected_metrics=protected_metrics,
                 )
-
-            # If max_bullets is explicitly constrained to 1 for a multi-bullet role, use the consolidated bullet
-            if max_bullets == 1 and consolidated_bullet:
-                final_bullets = [consolidated_bullet]
             else:
-                final_bullets = validated_bullets
+                final_bullets = [
+                    self.rephrase_bullet_constrained(
+                        source_bullet=b,
+                        job_title=job.title,
+                        matched_skills=evaluation.matched_skills,
+                        forbidden_terms=forbidden_terms,
+                        protected_metrics=protected_metrics,
+                        allow_rephrasing=allow_rephrasing,
+                    )
+                    for b in source_bullets[:target_bullets]
+                ]
+
+            consolidated_1 = None
+            if len(source_bullets) >= 2:
+                consolidated_1 = self.consolidate_bullets(
+                    source_bullets=source_bullets,
+                    role_title=role.get("title", ""),
+                    company=role.get("company", ""),
+                    job_title=job.title,
+                    forbidden_terms=forbidden_terms,
+                    protected_metrics=protected_metrics,
+                )
 
             role_entry: Dict[str, Any] = {
                 "role_id": role.get("role_id", ""),
@@ -773,9 +819,9 @@ class JobSynthesizer:
                 "bullets": final_bullets,
                 "source_bullet_count": len(source_bullets),
             }
-            if consolidated_bullet:
-                role_entry["consolidated_bullet"] = consolidated_bullet
-                role_entry["combined_bullet"] = consolidated_bullet
+            if consolidated_1:
+                role_entry["consolidated_bullet"] = consolidated_1
+                role_entry["combined_bullet"] = consolidated_1
             tailored_experience.append(role_entry)
 
         # 4. Tailored cover letter drafting

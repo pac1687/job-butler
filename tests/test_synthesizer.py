@@ -416,3 +416,40 @@ def test_build_tailored_payload_attaches_combined_bullet_for_two_bullet_roles() 
     assert "combined_bullet" in role_out
     assert "Delivered remote hardware" in role_out["combined_bullet"]
     assert "disk encryption" in role_out["combined_bullet"]
+
+
+def test_consolidate_role_bullets_four_to_two_thematic() -> None:
+    synthesizer = JobSynthesizer(ranker=FakeRanker())
+    softvu_bullets = [
+        "Webhooks & Third-Party API Integration: Developed real-time webhooks for email event streams to synchronize data with third-party CRMs (CoffeeScript, Node).",
+        "Enterprise CRM Integration: Authored Salesforce packages (Apex) connecting client Salesforce orgs directly to SoftVu's automated email platform, supporting enterprise client workflows.",
+        "Platform Resilience: Created request capture and replay mechanisms for scheduled maintenance windows to safeguard transaction streams; built marketing strategy data visualizations with D3.js.",
+        "Tooling & Automation: Implemented template cloning and automated HTML-to-PDF/PNG export tools (Angular 1.x, Node, Bootstrap).",
+    ]
+
+    mock_llm_response = {
+        "bullets": [
+            "API & CRM Integration: Developed real-time webhooks for email event streams using CoffeeScript and Node; authored Apex packages connecting Salesforce orgs to automated email platforms.",
+            "Platform Resilience & Tooling: Built transaction replay mechanisms for maintenance windows, D3.js data visualizations, and automated HTML export tools with Angular, Node, and Bootstrap.",
+        ]
+    }
+
+    with patch.object(synthesizer, "_chat_json", return_value=mock_llm_response):
+        consolidated = synthesizer.consolidate_role_bullets(
+            source_bullets=softvu_bullets,
+            target_count=2,
+            role_title="Software Engineer",
+            company="SoftVu",
+            job_title="Full-Stack Engineer",
+        )
+
+    assert len(consolidated) == 2
+    # Bullet 1 covers webhooks and salesforce/CRM
+    assert "webhooks" in consolidated[0].lower()
+    assert "apex" in consolidated[0].lower() or "crm" in consolidated[0].lower()
+    # Bullet 2 covers platform resilience / D3.js / tooling
+    assert "d3.js" in consolidated[1].lower() or "replay" in consolidated[1].lower() or "tools" in consolidated[1].lower()
+    # Check that neither bullet uses the awkward 'while' conjunction
+    for b in consolidated:
+        assert "while" not in b.lower()
+
