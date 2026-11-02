@@ -94,13 +94,28 @@ CREATE TABLE IF NOT EXISTS job_task_queue (
 
 CREATE INDEX IF NOT EXISTS idx_task_queue_pending ON job_task_queue(status, created_at);
 
--- Automated 30-Day Retention Cascade Function
+-- Automated 7-Day Unapplied & 30-Day Retention Cascade Function
 CREATE OR REPLACE FUNCTION purge_stale_job_records() RETURNS void AS $$
 BEGIN
+    -- 1. Remove NEW_MATCH and SAVED matches older than 7 days (by posted date or discovery timestamp)
+    DELETE FROM evaluated_matches m
+    USING jobs j
+    WHERE m.job_id = j.id
+      AND m.status IN ('NEW_MATCH', 'SAVED')
+      AND (
+          m.created_at < NOW() - INTERVAL '7 days'
+          OR j.created_at < NOW() - INTERVAL '7 days'
+          OR (
+              j.location ~ 'Posted [0-9]{4}-[0-9]{2}-[0-9]{2}'
+              AND to_date(substring(j.location from 'Posted ([0-9]{4}-[0-9]{2}-[0-9]{2})'), 'YYYY-MM-DD') < (CURRENT_DATE - 7)
+          )
+      );
+
+    -- 2. Remove raw job records older than 30 days unless APPLIED
     DELETE FROM jobs 
     WHERE created_at < NOW() - INTERVAL '30 days'
       AND id NOT IN (
-          SELECT job_id FROM evaluated_matches WHERE status IN ('SAVED', 'APPLIED')
+          SELECT job_id FROM evaluated_matches WHERE status = 'APPLIED'
       );
 END;
 $$ LANGUAGE plpgsql;

@@ -204,4 +204,42 @@ class ArtifactPublisher:
         conn.commit()
         return str(row[0]) if row else None
 
+    def delete_artifacts_from_r2(self, storage_keys: list[str]) -> int:
+        """
+        Deletes PDFs and any sibling `payload_snapshot.json` objects from R2/S3 bucket.
+        Returns the number of deleted object keys.
+        """
+        expanded: set[str] = set()
+        for raw_key in storage_keys:
+            if not raw_key or not raw_key.strip():
+                continue
+            trimmed = raw_key.strip()
+            expanded.add(trimmed)
+            last_slash = trimmed.rfind("/")
+            if last_slash > 0:
+                expanded.add(f"{trimmed[:last_slash]}/payload_snapshot.json")
+
+        if not expanded:
+            return 0
+
+        endpoint = (self.config.r2_endpoint_url or "").strip()
+        is_valid_endpoint = (
+            endpoint.startswith("https://")
+            and "<" not in endpoint
+            and ">" not in endpoint
+        )
+        if not is_valid_endpoint or not self.config.r2_access_key_id:
+            return 0
+
+        bucket = self.config.r2_bucket_name
+        deleted = 0
+        for key in expanded:
+            try:
+                self.s3.delete_object(Bucket=bucket, Key=key)
+                deleted += 1
+            except Exception as exc:
+                logger.warning("Failed to delete S3 object '%s': %s", key, exc)
+        return deleted
+
+
 

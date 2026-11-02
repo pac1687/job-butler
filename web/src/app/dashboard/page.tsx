@@ -4,6 +4,7 @@ import { Navbar } from "@/components/Navbar";
 import { JobMatchFeed } from "@/components/JobMatchFeed";
 import { getSql, type EvaluatedJobMatch } from "@/lib/db";
 import { DEMO_MATCHES } from "@/lib/mock-data";
+import { deleteStorageKeysFromR2 } from "@/lib/r2";
 import {
   deleteMatchesAction,
   enqueueBatchDiscoveryAction,
@@ -12,11 +13,62 @@ import {
   updateMatchStatusAction,
 } from "./actions";
 
+async function purgeExpiredUnappliedMatches(): Promise<void> {
+  try {
+    const sql = getSql();
+    const expired = await sql`
+      SELECT
+        m.id,
+        m.job_id,
+        m.resume_storage_key,
+        m.cover_letter_storage_key
+      FROM evaluated_matches m
+      JOIN jobs j ON j.id = m.job_id
+      WHERE m.status IN ('NEW_MATCH', 'SAVED')
+        AND (
+          m.created_at < NOW() - INTERVAL '7 days'
+          OR j.created_at < NOW() - INTERVAL '7 days'
+          OR (
+            j.location ~ 'Posted [0-9]{4}-[0-9]{2}-[0-9]{2}'
+            AND to_date(substring(j.location from 'Posted ([0-9]{4}-[0-9]{2}-[0-9]{2})'), 'YYYY-MM-DD') < (CURRENT_DATE - 7)
+          )
+        )
+    `;
+    if (expired.length === 0) {
+      return;
+    }
+
+    const storageKeys: Array<string | null> = [];
+    for (const row of expired) {
+      if (row.resume_storage_key) {
+        storageKeys.push(String(row.resume_storage_key));
+      }
+      if (row.cover_letter_storage_key) {
+        storageKeys.push(String(row.cover_letter_storage_key));
+      }
+    }
+    if (storageKeys.length > 0) {
+      await deleteStorageKeysFromR2(storageKeys);
+    }
+
+    for (const row of expired) {
+      const jobId = String(row.job_id);
+      const matchId = String(row.id);
+      await sql`DELETE FROM job_task_queue WHERE job_id = ${jobId}::uuid`;
+      await sql`UPDATE jobs SET description_text = '' WHERE id = ${jobId}::uuid`;
+      await sql`DELETE FROM evaluated_matches WHERE id = ${matchId}::uuid`;
+    }
+  } catch {
+    // Non-fatal on dashboard load
+  }
+}
+
 async function fetchDashboardMatches(): Promise<EvaluatedJobMatch[]> {
   if (!process.env.DATABASE_URL) {
     return DEMO_MATCHES;
   }
   try {
+    await purgeExpiredUnappliedMatches();
     const sql = getSql();
     const rows = await sql`
       SELECT

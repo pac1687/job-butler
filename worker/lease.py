@@ -32,6 +32,21 @@ WHERE lock_name = %s AND locked_by = %s;
 
 PURGE_STALE_JOBS_SQL = "SELECT purge_stale_job_records();"
 
+SELECT_EXPIRED_UNAPPLIED_MATCHES_SQL = """
+SELECT m.id, m.job_id, m.resume_storage_key, m.cover_letter_storage_key
+FROM evaluated_matches m
+JOIN jobs j ON j.id = m.job_id
+WHERE m.status IN ('NEW_MATCH', 'SAVED')
+  AND (
+    m.created_at < NOW() - INTERVAL '7 days'
+    OR j.created_at < NOW() - INTERVAL '7 days'
+    OR (
+      j.location ~ 'Posted [0-9]{4}-[0-9]{2}-[0-9]{2}'
+      AND to_date(substring(j.location from 'Posted ([0-9]{4}-[0-9]{2}-[0-9]{2})'), 'YYYY-MM-DD') < (CURRENT_DATE - 7)
+    )
+  );
+"""
+
 
 class LeaseCoordinator:
     """Manages distributed PostgreSQL leases across multiple workstations."""
@@ -90,9 +105,56 @@ class LeaseCoordinator:
         return bool(affected and affected > 0)
 
     def run_retention_purge(self) -> None:
-        """Invokes the PostgreSQL 30-day retention cascade function."""
+        """
+        Purges unapplied ('NEW_MATCH' or 'SAVED') job listings over 7 days old (including any
+        Neon Object Storage PDFs/snapshots while keeping content_hash in `jobs`), and invokes
+        the PostgreSQL 30-day retention cascade function.
+        """
+        expired_rows: list[Any] = []
         with self.conn.cursor() as cur:
+            if hasattr(cur, "fetchall"):
+                cur.execute(SELECT_EXPIRED_UNAPPLIED_MATCHES_SQL)
+                expired_rows = list(cur.fetchall() or [])
+                if expired_rows:
+                    storage_keys: list[str] = []
+                    match_ids: list[str] = []
+                    job_ids: list[str] = []
+                    for row in expired_rows:
+                        match_ids.append(str(row[0]))
+                        job_ids.append(str(row[1]))
+                        if row[2]:
+                            storage_keys.append(str(row[2]))
+                        if row[3]:
+                            storage_keys.append(str(row[3]))
+                    if storage_keys:
+                        try:
+                            from worker.publisher import ArtifactPublisher
+
+                            ArtifactPublisher().delete_artifacts_from_r2(storage_keys)
+                        except Exception as s3_exc:
+                            logger.warning(
+                                "Failed to purge S3 artifacts for expired matches: %s",
+                                s3_exc,
+                            )
+                    for j_id in job_ids:
+                        cur.execute(
+                            "DELETE FROM job_task_queue WHERE job_id = %s;",
+                            (j_id,),
+                        )
+                        cur.execute(
+                            "UPDATE jobs SET description_text = '' WHERE id = %s;",
+                            (j_id,),
+                        )
+                    for m_id in match_ids:
+                        cur.execute(
+                            "DELETE FROM evaluated_matches WHERE id = %s;",
+                            (m_id,),
+                        )
+                    logger.info(
+                        "Auto-purged %d expired (>7 days old) NEW_MATCH/SAVED job card(s).",
+                        len(match_ids),
+                    )
             cur.execute(PURGE_STALE_JOBS_SQL)
         self.conn.commit()
-        logger.info("Completed 30-day stale job retention purge.")
+        logger.info("Completed 7-day unapplied & 30-day stale job retention purge.")
 
