@@ -341,20 +341,34 @@ export function JobMatchFeed({
               >
                 Max Jobs
               </label>
-              <select
-                id="batch-max-jobs"
-                aria-label="Maximum jobs per discovery scrape"
-                value={batchMaxJobs}
-                onChange={(e) => setBatchMaxJobs(Number(e.target.value))}
-                disabled={runningDiscovery}
-                className="bg-slate-950 px-2.5 py-1.5 text-xs font-semibold text-white focus:outline-none"
-              >
-                {BATCH_SIZE_OPTIONS.map((count) => (
-                  <option key={count} value={count}>
-                    {count}
-                  </option>
-                ))}
-              </select>
+              <div className="relative flex items-center">
+                <select
+                  id="batch-max-jobs"
+                  aria-label="Maximum jobs per discovery scrape"
+                  value={batchMaxJobs}
+                  onChange={(e) => setBatchMaxJobs(Number(e.target.value))}
+                  disabled={runningDiscovery}
+                  className="appearance-none bg-slate-950 pl-3 pr-8 py-1.5 text-xs font-semibold text-white focus:outline-none cursor-pointer"
+                >
+                  {BATCH_SIZE_OPTIONS.map((count) => (
+                    <option key={count} value={count}>
+                      {count}
+                    </option>
+                  ))}
+                </select>
+                <svg
+                  aria-hidden="true"
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                  className="pointer-events-none absolute right-2.5 h-3.5 w-3.5 text-slate-400"
+                >
+                  <path
+                    fillRule="evenodd"
+                    d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z"
+                    clipRule="evenodd"
+                  />
+                </svg>
+              </div>
             </div>
             <button
               onClick={handleRunBatchDiscovery}
@@ -703,21 +717,35 @@ export function JobMatchFeed({
 
                 <div className="flex items-center gap-2">
                   <label className="text-xs text-slate-400">Stage:</label>
-                  <select
-                    aria-label={`Status for ${match.title}`}
-                    disabled={readOnly}
-                    value={match.status}
-                    onChange={(e) =>
-                      handleStatusChange(match.id, e.target.value as MatchStatus)
-                    }
-                    className="bg-slate-950 border border-slate-700 rounded-md px-2.5 py-1 text-xs text-slate-200 disabled:opacity-50"
-                  >
-                    {STATUS_OPTIONS.map((st) => (
-                      <option key={st} value={st}>
-                        {st}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="relative flex items-center">
+                    <select
+                      aria-label={`Status for ${match.title}`}
+                      disabled={readOnly}
+                      value={match.status}
+                      onChange={(e) =>
+                        handleStatusChange(match.id, e.target.value as MatchStatus)
+                      }
+                      className="appearance-none bg-slate-950 border border-slate-700 rounded-md pl-3 pr-8 py-1 text-xs text-slate-200 focus:outline-none focus:border-slate-500 disabled:opacity-50 cursor-pointer"
+                    >
+                      {STATUS_OPTIONS.map((st) => (
+                        <option key={st} value={st}>
+                          {st}
+                        </option>
+                      ))}
+                    </select>
+                    <svg
+                      aria-hidden="true"
+                      viewBox="0 0 20 20"
+                      fill="currentColor"
+                      className="pointer-events-none absolute right-2.5 h-3.5 w-3.5 text-slate-400"
+                    >
+                      <path
+                        fillRule="evenodd"
+                        d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z"
+                        clipRule="evenodd"
+                      />
+                    </svg>
+                  </div>
                   {!readOnly && (
                     <button
                       type="button"
