@@ -73,11 +73,47 @@ DEFAULT_ATS_BOARDS: Dict[str, List[str]] = {
     ],
 }
 
+RECOVER_ORPHANED_TASKS_SQL = """
+UPDATE job_task_queue
+SET status = 'PENDING',
+    updated_at = NOW()
+WHERE status = 'PROCESSING'
+  AND updated_at < NOW() - INTERVAL '3 minutes'
+  AND (
+    payload->>'claimed_by' IS NULL
+    OR NOT EXISTS (
+      SELECT 1 FROM pipeline_leases
+      WHERE lock_name = 'worker_heartbeat:' || (job_task_queue.payload->>'claimed_by')
+        AND expires_at > NOW()
+    )
+  );
+"""
+
 CLAIM_NEXT_TASK_SQL = """
 SELECT id, job_id, task_type, payload
 FROM job_task_queue
 WHERE status = 'PENDING'
-ORDER BY created_at ASC
+  AND (
+    payload->>'target_worker' = %s
+    OR (
+      (payload->>'target_worker' IS NULL OR payload->>'target_worker' = '')
+      AND created_at <= NOW() - (%s || ' seconds')::INTERVAL
+    )
+    OR (
+      payload->>'target_worker' IS NOT NULL
+      AND payload->>'target_worker' <> ''
+      AND payload->>'target_worker' <> %s
+      AND created_at <= NOW() - (%s || ' seconds')::INTERVAL
+      AND NOT EXISTS (
+        SELECT 1 FROM pipeline_leases
+        WHERE lock_name = 'worker_heartbeat:' || (job_task_queue.payload->>'target_worker')
+          AND expires_at > NOW()
+      )
+    )
+  )
+ORDER BY
+  CASE WHEN payload->>'target_worker' = %s THEN 0 ELSE 1 END ASC,
+  created_at ASC
 FOR UPDATE SKIP LOCKED
 LIMIT 1;
 """
@@ -268,6 +304,7 @@ def discover_and_score_single_job(
     state: Dict[str, Any],
     synthesizer: JobSynthesizer,
     publisher: ArtifactPublisher,
+    worker_node_id: Optional[str] = None,
 ) -> str:
     """
     Stage 1 (Fast Discovery): Evaluates job fit via LM Studio (with NO database connection held open)
@@ -289,6 +326,10 @@ def discover_and_score_single_job(
         if candidate_sal and candidate_sal.lower() not in {"null", "none", "n/a", "unknown", "not specified", "not stated"}:
             job = job.model_copy(update={"salary_range": candidate_sal})
     with psycopg.connect(database_url) as job_conn:
+        if worker_node_id:
+            lease = LeaseCoordinator(job_conn, worker_id=worker_node_id)
+            lease.heartbeat(ttl_seconds=90)
+            lease.renew_lease("nightly_batch", ttl_minutes=15)
         match_id = publisher.persist_evaluated_match(
             conn=job_conn,
             job=job,
@@ -308,7 +349,11 @@ def discover_and_score_single_job(
     return match_id
 
 
-def run_nightly_batch(config: WorkerConfig, max_jobs: Optional[int] = None) -> None:
+def run_nightly_batch(
+    config: WorkerConfig,
+    max_jobs: Optional[int] = None,
+    force_lease: bool = False,
+) -> None:
     """
     Executes the batch job discovery & fit scoring pipeline with pre-flight check,
     distributed lease, retention purge, location/remote filtering, and company diversity cap.
@@ -320,7 +365,8 @@ def run_nightly_batch(config: WorkerConfig, max_jobs: Optional[int] = None) -> N
 
     with psycopg.connect(config.database_url) as conn:
         lease = LeaseCoordinator(conn, worker_id=config.worker_node_id)
-        if not lease.acquire_lease("nightly_batch", ttl_minutes=120):
+        lease.heartbeat(ttl_seconds=90)
+        if not lease.acquire_lease("nightly_batch", ttl_minutes=15, force=force_lease):
             return
         lease.run_retention_purge()
         state = _load_pipeline_state(conn)
@@ -434,6 +480,7 @@ def run_nightly_batch(config: WorkerConfig, max_jobs: Optional[int] = None) -> N
                     state=state,
                     synthesizer=synthesizer,
                     publisher=publisher,
+                    worker_node_id=config.worker_node_id,
                 )
             except Exception as job_exc:
                 logger.error(
@@ -454,13 +501,30 @@ def run_nightly_batch(config: WorkerConfig, max_jobs: Optional[int] = None) -> N
 def poll_task_queue_once(config: WorkerConfig) -> bool:
     """
     Claims and processes at most one pending task from `job_task_queue` using
-    `SELECT ... FOR UPDATE SKIP LOCKED` for multi-node concurrency safety.
+    `SELECT ... FOR UPDATE SKIP LOCKED` with worker affinity (`target_worker`) and priority.
     Uses short-lived DB connections so Neon's pooler never drops an idle SSL connection
     during local LLM inference.
     """
+    untargeted_delay = 0 if config.worker_priority <= 1 else (config.worker_priority - 1) * config.fallback_claim_delay_seconds
+    fallback_delay = max(30, config.fallback_claim_delay_seconds)
+
     with psycopg.connect(config.database_url) as conn:
+        LeaseCoordinator(conn, worker_id=config.worker_node_id).heartbeat(
+            ttl_seconds=max(45, config.queue_poll_interval_seconds * 4)
+        )
         with conn.cursor() as cur:
-            cur.execute(CLAIM_NEXT_TASK_SQL)
+            if hasattr(cur, "fetchone"):
+                cur.execute(RECOVER_ORPHANED_TASKS_SQL)
+            cur.execute(
+                CLAIM_NEXT_TASK_SQL,
+                (
+                    config.worker_node_id,
+                    str(untargeted_delay),
+                    config.worker_node_id,
+                    str(fallback_delay),
+                    config.worker_node_id,
+                ),
+            )
             row = cur.fetchone()
             if not row:
                 conn.commit()
@@ -468,12 +532,24 @@ def poll_task_queue_once(config: WorkerConfig) -> bool:
 
             task_id, job_id, task_type, payload = row[0], row[1], row[2], row[3] or {}
             cur.execute(
-                "UPDATE job_task_queue SET status = 'PROCESSING', updated_at = NOW() WHERE id = %s;",
-                (task_id,),
+                """
+                UPDATE job_task_queue
+                SET status = 'PROCESSING',
+                    payload = COALESCE(payload, '{}'::jsonb) || jsonb_build_object('claimed_by', %s::text),
+                    updated_at = NOW()
+                WHERE id = %s;
+                """,
+                (config.worker_node_id, task_id),
             )
         conn.commit()
 
-    logger.info("Processing task %s (type=%s)", task_id, task_type)
+    logger.info(
+        "Processing task %s (type=%s, target_worker=%s, claimed_by=%s)",
+        task_id,
+        task_type,
+        payload.get("target_worker") or "any",
+        config.worker_node_id,
+    )
     try:
         if not check_lm_studio_health(config.lm_studio_base_url):
             raise RuntimeError("Host LM Studio server is offline.")
@@ -522,7 +598,7 @@ def poll_task_queue_once(config: WorkerConfig) -> bool:
         elif task_type in ("EVALUATE_URL", "REGENERATE_RESUME", "REWRITE_COVER_LETTER"):
             if payload.get("mode") == "BATCH_DISCOVERY":
                 max_jobs = int(payload.get("max_jobs") or config.max_jobs_per_batch)
-                run_nightly_batch(config, max_jobs=max_jobs)
+                run_nightly_batch(config, max_jobs=max_jobs, force_lease=True)
                 with psycopg.connect(config.database_url) as conn:
                     with conn.cursor() as cur:
                         cur.execute(
@@ -531,7 +607,7 @@ def poll_task_queue_once(config: WorkerConfig) -> bool:
                         )
                     conn.commit()
             else:
-                existing_eval: Optional[JobEvaluationResult] = None
+                has_existing_match = False
                 with psycopg.connect(config.database_url) as conn:
                     state = _load_pipeline_state(conn)
                     target_url = str(payload.get("url") or "")
@@ -557,22 +633,20 @@ def poll_task_queue_once(config: WorkerConfig) -> bool:
                                     salary_range=jrow[9],
                                 )
                             cur.execute(
-                                "SELECT fit_score, fit_rationale, matched_skills, missing_skills FROM evaluated_matches WHERE job_id = %s ORDER BY created_at DESC LIMIT 1;",
+                                "SELECT 1 FROM evaluated_matches WHERE job_id = %s LIMIT 1;",
                                 (job_id,),
                             )
-                            mrow = cur.fetchone()
-                            if mrow:
-                                existing_eval = JobEvaluationResult(
-                                    fit_score=float(mrow[0]),
-                                    fit_rationale=str(mrow[1]),
-                                    matched_skills=list(mrow[2] or []),
-                                    missing_skills=list(mrow[3] or []),
-                                )
+                            has_existing_match = cur.fetchone() is not None
                     if job is None:
                         raise ValueError("Unable to resolve job record or scrape URL for task.")
 
-                # Reuse existing fit evaluation when tailoring an already-scored match; otherwise evaluate now
-                evaluation = existing_eval or synthesizer.evaluate_job_fit(
+                # Always evaluate job fit against the current active master_profile when generating PDFs
+                logger.info(
+                    "Evaluating current master profile fit for '%s' at '%s'...",
+                    job.title,
+                    job.company,
+                )
+                evaluation = synthesizer.evaluate_job_fit(
                     job=job,
                     master_profile=state["master_profile"],
                     natural_language_notes=state["preferences"].get("natural_language_notes", ""),
@@ -613,8 +687,9 @@ def poll_task_queue_once(config: WorkerConfig) -> bool:
                             resume_storage_key=storage_keys.get("resume_storage_key"),
                             cover_letter_storage_key=storage_keys.get("cover_letter_storage_key"),
                             payload_snapshot=payload_snapshot,
+                            evaluation=evaluation,
                         )
-                        if job_id and existing_eval is not None
+                        if job_id and has_existing_match
                         else None
                     )
                     if not updated_match_id:
@@ -652,8 +727,9 @@ def poll_task_queue_once(config: WorkerConfig) -> bool:
 def run_queue_listener(config: WorkerConfig) -> None:
     """Persistent daemon loop polling `job_task_queue` with `FOR UPDATE SKIP LOCKED`."""
     logger.info(
-        "Starting queue listener on node '%s' (model='%s', poll interval=%ds)...",
+        "Starting queue listener on node '%s' (priority=%d, model='%s', poll interval=%ds)...",
         config.worker_node_id,
+        config.worker_priority,
         config.lm_studio_model,
         config.queue_poll_interval_seconds,
     )
@@ -696,4 +772,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

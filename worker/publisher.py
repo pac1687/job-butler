@@ -181,25 +181,52 @@ class ArtifactPublisher:
         resume_storage_key: Optional[str],
         cover_letter_storage_key: Optional[str],
         payload_snapshot: Dict[str, Any],
+        evaluation: Optional[JobEvaluationResult] = None,
     ) -> Optional[str]:
-        """Updates an existing evaluated_matches row with newly compiled PDF storage keys and snapshot."""
+        """Updates an existing evaluated_matches row with newly compiled PDF storage keys, snapshot, and fresh evaluation."""
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE evaluated_matches
-                SET resume_storage_key = %s,
-                    cover_letter_storage_key = %s,
-                    payload_snapshot = %s::jsonb
-                WHERE job_id = %s
-                RETURNING id;
-                """,
-                (
-                    resume_storage_key,
-                    cover_letter_storage_key,
-                    json.dumps(payload_snapshot),
-                    job_id,
-                ),
-            )
+            if evaluation is not None:
+                cur.execute(
+                    """
+                    UPDATE evaluated_matches
+                    SET fit_score = %s,
+                        fit_rationale = %s,
+                        matched_skills = %s::jsonb,
+                        missing_skills = %s::jsonb,
+                        resume_storage_key = %s,
+                        cover_letter_storage_key = %s,
+                        payload_snapshot = %s::jsonb
+                    WHERE job_id = %s
+                    RETURNING id;
+                    """,
+                    (
+                        evaluation.fit_score,
+                        evaluation.fit_rationale,
+                        json.dumps(evaluation.matched_skills),
+                        json.dumps(evaluation.missing_skills),
+                        resume_storage_key,
+                        cover_letter_storage_key,
+                        json.dumps(payload_snapshot),
+                        job_id,
+                    ),
+                )
+            else:
+                cur.execute(
+                    """
+                    UPDATE evaluated_matches
+                    SET resume_storage_key = %s,
+                        cover_letter_storage_key = %s,
+                        payload_snapshot = %s::jsonb
+                    WHERE job_id = %s
+                    RETURNING id;
+                    """,
+                    (
+                        resume_storage_key,
+                        cover_letter_storage_key,
+                        json.dumps(payload_snapshot),
+                        job_id,
+                    ),
+                )
             row = cur.fetchone()
         conn.commit()
         return str(row[0]) if row else None
@@ -240,6 +267,3 @@ class ArtifactPublisher:
             except Exception as exc:
                 logger.warning("Failed to delete S3 object '%s': %s", key, exc)
         return deleted
-
-
-

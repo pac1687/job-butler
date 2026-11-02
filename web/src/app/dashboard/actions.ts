@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { auth, isAuthorizedAdminEmail } from "@/auth";
-import { getSql, type MatchStatus } from "@/lib/db";
+import { getSql, withWorkerAffinity, type MatchStatus } from "@/lib/db";
 import { deleteStorageKeysFromR2 } from "@/lib/r2";
 
 export async function updateMatchStatusAction(matchId: string, status: MatchStatus) {
@@ -27,9 +27,10 @@ export async function enqueueJobUrlAction(url: string) {
   }
 
   const sql = getSql();
+  const payload = withWorkerAffinity({ url });
   await sql`
     INSERT INTO job_task_queue (task_type, payload, status)
-    VALUES ('EVALUATE_URL', ${JSON.stringify({ url })}::jsonb, 'PENDING')
+    VALUES ('EVALUATE_URL', ${JSON.stringify(payload)}::jsonb, 'PENDING')
   `;
   revalidatePath("/dashboard");
 }
@@ -42,9 +43,13 @@ export async function enqueueBatchDiscoveryAction(maxJobs: number = 10) {
 
   const clampedMaxJobs = Math.min(50, Math.max(1, Math.floor(Number(maxJobs) || 10)));
   const sql = getSql();
+  const payload = withWorkerAffinity({
+    mode: "BATCH_DISCOVERY",
+    max_jobs: clampedMaxJobs,
+  });
   await sql`
     INSERT INTO job_task_queue (task_type, payload, status)
-    VALUES ('EVALUATE_URL', ${JSON.stringify({ mode: "BATCH_DISCOVERY", max_jobs: clampedMaxJobs })}::jsonb, 'PENDING')
+    VALUES ('EVALUATE_URL', ${JSON.stringify(payload)}::jsonb, 'PENDING')
   `;
   revalidatePath("/dashboard");
 }
@@ -63,10 +68,11 @@ export async function enqueueBatchTailorAction(jobIds: string[]) {
   }
 
   const sql = getSql();
+  const payloadJson = JSON.stringify(withWorkerAffinity({}));
   for (const jobId of uniqueJobIds) {
     await sql`
       INSERT INTO job_task_queue (job_id, task_type, payload, status)
-      VALUES (${jobId}::uuid, 'REGENERATE_RESUME', '{}'::jsonb, 'PENDING')
+      VALUES (${jobId}::uuid, 'REGENERATE_RESUME', ${payloadJson}::jsonb, 'PENDING')
     `;
   }
   revalidatePath("/dashboard");
@@ -130,6 +136,3 @@ export async function deleteMatchesAction(matchIds: string[]) {
 
   revalidatePath("/dashboard");
 }
-
-
-

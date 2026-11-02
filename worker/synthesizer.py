@@ -221,6 +221,8 @@ class JobSynthesizer:
         system_prompt = (
             "You are an extractive resume editor. Rewrite the source bullet to emphasize "
             "relevant keywords WITHOUT adding any unverified tools, frameworks, or metrics. "
+            "Preserve specific named tools, AI models, and platforms already present in the source bullet "
+            "(e.g., Claude, OpenAI, AWS, PostgreSQL, etc.). "
             "Keep every number/percentage identical to the source. Maximum length is 170 characters. "
             f"NEVER include any of these forbidden terms: {list(forbidden_terms)}. "
             'Return ONLY JSON: {"bullet": "..."}'
@@ -229,7 +231,7 @@ class JobSynthesizer:
             {
                 "source_bullet": source_bullet,
                 "target_job_title": job_title,
-                "target_keywords": list(matched_skills[:6]),
+                "target_keywords": list(matched_skills[:10]),
             }
         )
         try:
@@ -386,4 +388,3 @@ class JobSynthesizer:
             schema_model=ParsedMasterProfile,
         )
         return ParsedMasterProfile.model_validate(data)
-

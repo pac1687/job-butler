@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { auth, isAuthorizedAdminEmail } from "@/auth";
-import { getSql } from "@/lib/db";
+import { getSql, withWorkerAffinity } from "@/lib/db";
 
 export async function GET() {
   const session = await auth();
@@ -11,7 +11,7 @@ export async function GET() {
   try {
     const sql = getSql();
     const tasks = await sql`
-      SELECT id, job_id, task_type, status, error_message, created_at, updated_at
+      SELECT id, job_id, task_type, payload, status, error_message, created_at, updated_at
       FROM job_task_queue
       ORDER BY created_at DESC
       LIMIT 15
@@ -30,7 +30,9 @@ export async function POST(request: Request) {
 
   const body = await request.json();
   const taskType = body.task_type || "EVALUATE_URL";
-  const payload = body.payload || {};
+  const rawPayload =
+    body.payload && typeof body.payload === "object" ? body.payload : {};
+  const payload = withWorkerAffinity(rawPayload);
   const jobId = body.job_id || null;
 
   const allowedTypes = [
@@ -47,9 +49,8 @@ export async function POST(request: Request) {
   const inserted = await sql`
     INSERT INTO job_task_queue (job_id, task_type, payload, status)
     VALUES (${jobId}, ${taskType}, ${JSON.stringify(payload)}::jsonb, 'PENDING')
-    RETURNING id, task_type, status, created_at
+    RETURNING id, task_type, payload, status, created_at
   `;
 
   return NextResponse.json({ task: inserted[0] }, { status: 201 });
 }
-

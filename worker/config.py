@@ -69,6 +69,12 @@ class WorkerConfig:
     worker_node_id: str = field(
         default_factory=lambda: os.getenv("WORKER_NODE_ID", socket.gethostname())
     )
+    worker_priority: int = field(
+        default_factory=lambda: max(1, int(os.getenv("WORKER_PRIORITY", "1")))
+    )
+    fallback_claim_delay_seconds: int = field(
+        default_factory=lambda: max(5, int(os.getenv("FALLBACK_CLAIM_DELAY_SECONDS", "30")))
+    )
     queue_poll_interval_seconds: int = field(
         default_factory=lambda: int(os.getenv("QUEUE_POLL_INTERVAL_SECONDS", "10"))
     )
@@ -85,5 +91,3 @@ class WorkerConfig:
     def from_env(cls) -> "WorkerConfig":
         """Constructs a WorkerConfig populated from current environment variables."""
         return cls()
-
-

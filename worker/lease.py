@@ -18,6 +18,24 @@ WHERE pipeline_leases.expires_at < NOW()
    OR pipeline_leases.locked_by = EXCLUDED.locked_by;
 """
 
+FORCE_ACQUIRE_LEASE_SQL = """
+INSERT INTO pipeline_leases (lock_name, locked_by, expires_at)
+VALUES (%s, %s, NOW() + (%s || ' minutes')::INTERVAL)
+ON CONFLICT (lock_name) DO UPDATE
+SET acquired_at = NOW(),
+    locked_by = EXCLUDED.locked_by,
+    expires_at = EXCLUDED.expires_at;
+"""
+
+UPSERT_HEARTBEAT_SQL = """
+INSERT INTO pipeline_leases (lock_name, locked_by, expires_at)
+VALUES (%s, %s, NOW() + (%s || ' seconds')::INTERVAL)
+ON CONFLICT (lock_name) DO UPDATE
+SET acquired_at = NOW(),
+    locked_by = EXCLUDED.locked_by,
+    expires_at = EXCLUDED.expires_at;
+"""
+
 RENEW_LEASE_SQL = """
 UPDATE pipeline_leases
 SET expires_at = NOW() + (%s || ' minutes')::INTERVAL
@@ -59,22 +77,26 @@ class LeaseCoordinator:
         self,
         lock_name: str = "nightly_batch",
         ttl_minutes: int = 120,
+        force: bool = False,
     ) -> bool:
         """
         Attempts to acquire or re-enter `lock_name` for `worker_id`.
+        If `force=True`, takes over `lock_name` even if held by another node.
         Returns True if acquired, False if another active node holds the lease.
         """
+        sql = FORCE_ACQUIRE_LEASE_SQL if force else ACQUIRE_LEASE_SQL
         with self.conn.cursor() as cur:
-            cur.execute(ACQUIRE_LEASE_SQL, (lock_name, self.worker_id, str(ttl_minutes)))
+            cur.execute(sql, (lock_name, self.worker_id, str(ttl_minutes)))
             affected = cur.rowcount
         self.conn.commit()
 
         if affected and affected > 0:
             logger.info(
-                "Acquired lease '%s' for node '%s' (TTL=%dm).",
+                "Acquired lease '%s' for node '%s' (TTL=%dm, force=%s).",
                 lock_name,
                 self.worker_id,
                 ttl_minutes,
+                force,
             )
             return True
 
@@ -83,6 +105,16 @@ class LeaseCoordinator:
             lock_name,
         )
         return False
+
+    def heartbeat(self, ttl_seconds: int = 45) -> None:
+        """Publishes a short-lived worker node heartbeat in `pipeline_leases`."""
+        lock_name = f"worker_heartbeat:{self.worker_id}"
+        with self.conn.cursor() as cur:
+            cur.execute(
+                UPSERT_HEARTBEAT_SQL,
+                (lock_name, self.worker_id, str(max(15, ttl_seconds))),
+            )
+        self.conn.commit()
 
     def renew_lease(
         self,
@@ -157,4 +189,3 @@ class LeaseCoordinator:
             cur.execute(PURGE_STALE_JOBS_SQL)
         self.conn.commit()
         logger.info("Completed 7-day unapplied & 30-day stale job retention purge.")
-

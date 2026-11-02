@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { auth, isAuthorizedAdminEmail } from "@/auth";
-import { getSql } from "@/lib/db";
+import { getSql, withWorkerAffinity } from "@/lib/db";
 
 export async function uploadAndEnqueueMasterResumeAction(formData: FormData) {
   const session = await auth();
@@ -43,15 +43,16 @@ export async function uploadAndEnqueueMasterResumeAction(formData: FormData) {
   }
 
   const sql = getSql();
+  const taskPayload = withWorkerAffinity({
+    filename: file.name,
+    raw_text: extractedText,
+    file_base64: fileBase64,
+  });
   await sql`
     INSERT INTO job_task_queue (task_type, payload, status)
     VALUES (
       'PARSE_MASTER_RESUME',
-      ${JSON.stringify({
-        filename: file.name,
-        raw_text: extractedText,
-        file_base64: fileBase64,
-      })}::jsonb,
+      ${JSON.stringify(taskPayload)}::jsonb,
       'PENDING'
     )
   `;
@@ -177,4 +178,3 @@ export async function updateJobPreferencesAction(payload: {
   `;
   revalidatePath("/profile");
 }
-

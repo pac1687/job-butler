@@ -81,3 +81,27 @@ export function getSql() {
   return neon(url);
 }
 
+export function getPreferredWorkerNodeId(): string | null {
+  const raw = (
+    process.env.PREFERRED_WORKER_NODE_ID ||
+    process.env.WORKER_NODE_ID ||
+    ""
+  ).trim();
+  return raw ? raw : null;
+}
+
+export function withWorkerAffinity(
+  payload: Record<string, unknown> = {}
+): Record<string, unknown> {
+  const targetWorker =
+    typeof payload.target_worker === "string" && payload.target_worker.trim()
+      ? payload.target_worker.trim()
+      : getPreferredWorkerNodeId();
+  if (!targetWorker) {
+    return payload;
+  }
+  return {
+    ...payload,
+    target_worker: targetWorker,
+  };
+}
