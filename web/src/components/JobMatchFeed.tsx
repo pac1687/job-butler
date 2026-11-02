@@ -106,7 +106,9 @@ export function JobMatchFeed({
   onDeleteMatches,
 }: JobMatchFeedProps) {
   const [matches, setMatches] = useState<EvaluatedJobMatch[]>(initialMatches);
-  const [activeFilter, setActiveFilter] = useState<string>("ALL");
+  const [activeFilter, setActiveFilter] = useState<string>(
+    readOnly ? "ALL" : "NEW_24H"
+  );
   const [snapshotModalMatch, setSnapshotModalMatch] = useState<EvaluatedJobMatch | null>(null);
   const [showQueueModal, setShowQueueModal] = useState(false);
   const [customUrl, setCustomUrl] = useState("");

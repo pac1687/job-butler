@@ -502,56 +502,72 @@ class JobCollector:
 
     def fetch_remotive_remote_jobs(
         self,
-        limit: int = 50,
+        limit: int = 100,
         max_age_days: int = 7,
     ) -> List[ScrapedJob]:
-        """Fetches remote startup/mid-sized software roles posted within `max_age_days` from Remotive API."""
-        url = f"https://remotive.com/api/remote-jobs?category=software-dev&limit={limit}"
+        """
+        Fetches remote startup/mid-sized software, customer-support/solutions, and platform roles
+        posted within `max_age_days` from the Remotive API.
+        """
+        categories = ("software-dev", "customer-support", "devops")
         jobs: List[ScrapedJob] = []
-        try:
-            resp = self.client.get(url)
-            resp.raise_for_status()
-            payload = resp.json()
-            for item in payload.get("jobs", []):
-                title = str(item.get("title") or "").strip()
-                company = str(item.get("company_name") or "Unknown").strip()
-                if not title or company.lower() in EXCLUDED_TIER2_COMPANIES:
-                    continue
-                is_recent, posted_iso = parse_and_check_recency(
-                    item.get("publication_date"),
-                    max_age_days=max_age_days,
-                )
-                if not is_recent:
-                    continue
-                location = str(item.get("candidate_required_location") or "Remote").strip()
-                if posted_iso:
-                    location = f"{location} • Posted {posted_iso}"
-                raw_desc = str(item.get("description") or "")
-                cleaned = clean_job_description(raw_desc)
-                if not cleaned:
-                    continue
-                salary = (
-                    str(item.get("salary") or "").strip()
-                    or extract_salary_from_text(cleaned)
-                    or None
-                )
-                content_hash = compute_content_hash(title, company, cleaned)
-                jobs.append(
-                    ScrapedJob(
-                        source="remotive",
-                        source_id=str(item.get("id") or content_hash[:16]),
-                        title=title,
-                        company=company,
-                        location=location,
-                        is_remote=True,
-                        url=str(item.get("url") or url),
-                        content_hash=content_hash,
-                        description_text=cleaned,
-                        salary_range=salary,
+        seen_ids: Set[str] = set()
+        for category in categories:
+            url = f"https://remotive.com/api/remote-jobs?category={category}&limit={limit}"
+            try:
+                resp = self.client.get(url)
+                resp.raise_for_status()
+                payload = resp.json()
+                for item in payload.get("jobs", []):
+                    item_id = str(item.get("id") or "")
+                    if item_id and item_id in seen_ids:
+                        continue
+                    title = str(item.get("title") or "").strip()
+                    company = str(item.get("company_name") or "Unknown").strip()
+                    if not title or company.lower() in EXCLUDED_TIER2_COMPANIES:
+                        continue
+                    is_recent, posted_iso = parse_and_check_recency(
+                        item.get("publication_date"),
+                        max_age_days=max_age_days,
                     )
-                )
-        except Exception as exc:
-            logger.warning("Remotive remote jobs fetch failed: %s", exc)
+                    if not is_recent:
+                        continue
+                    req_loc = str(item.get("candidate_required_location") or "Worldwide").strip()
+                    location = (
+                        req_loc
+                        if "remote" in req_loc.lower()
+                        else f"Remote ({req_loc})"
+                    )
+                    if posted_iso:
+                        location = f"{location} • Posted {posted_iso}"
+                    raw_desc = str(item.get("description") or "")
+                    cleaned = clean_job_description(raw_desc)
+                    if not cleaned:
+                        continue
+                    salary = (
+                        str(item.get("salary") or "").strip()
+                        or extract_salary_from_text(cleaned)
+                        or None
+                    )
+                    content_hash = compute_content_hash(title, company, cleaned)
+                    if item_id:
+                        seen_ids.add(item_id)
+                    jobs.append(
+                        ScrapedJob(
+                            source="remotive",
+                            source_id=item_id or content_hash[:16],
+                            title=title,
+                            company=company,
+                            location=location,
+                            is_remote=True,
+                            url=str(item.get("url") or url),
+                            content_hash=content_hash,
+                            description_text=cleaned,
+                            salary_range=salary,
+                        )
+                    )
+            except Exception as exc:
+                logger.warning("Remotive remote jobs fetch failed for category '%s': %s", category, exc)
         return jobs
 
     def fetch_linkedin_guest_jobs(
