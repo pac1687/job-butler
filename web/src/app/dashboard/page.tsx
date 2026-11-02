@@ -181,7 +181,7 @@ async function fetchDashboardMatches(): Promise<EvaluatedJobMatch[]> {
       FROM evaluated_matches m
       JOIN jobs j ON j.id = m.job_id
       ORDER BY m.fit_score DESC, m.created_at DESC
-      LIMIT 100
+      LIMIT 250
     `;
     return rows as unknown as EvaluatedJobMatch[];
   } catch {

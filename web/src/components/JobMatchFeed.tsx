@@ -74,6 +74,28 @@ function formatJobSource(rawSource?: string | null): {
   }
 }
 
+function isPostedWithinLast24Hours(match: EvaluatedJobMatch): boolean {
+  const loc = match.location || "";
+  const postedMatch = /Posted\s+(\d{4}-\d{2}-\d{2})/i.exec(loc);
+  if (postedMatch) {
+    const [year, month, day] = postedMatch[1].split("-").map(Number);
+    const now = new Date();
+    const todayLocal = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const postedLocal = new Date(year, month - 1, day);
+    const diffDays = Math.round(
+      (todayLocal.getTime() - postedLocal.getTime()) / (1000 * 60 * 60 * 24)
+    );
+    return diffDays >= 0 && diffDays <= 1;
+  }
+  if (match.created_at) {
+    const createdMs = new Date(match.created_at).getTime();
+    if (Number.isFinite(createdMs)) {
+      return Date.now() - createdMs <= 24 * 60 * 60 * 1000;
+    }
+  }
+  return false;
+}
+
 export function JobMatchFeed({
   initialMatches,
   readOnly = false,
@@ -98,9 +120,19 @@ export function JobMatchFeed({
   const [deletingMatches, setDeletingMatches] = useState(false);
   const [loadingArtifactId, setLoadingArtifactId] = useState<string | null>(null);
 
-  const filteredMatches = matches.filter((m) =>
-    activeFilter === "ALL" ? m.status !== "ARCHIVED" : m.status === activeFilter
-  );
+  const fresh24hCount = matches.filter(
+    (m) => m.status === "NEW_MATCH" && isPostedWithinLast24Hours(m)
+  ).length;
+
+  const filteredMatches = matches.filter((m) => {
+    if (activeFilter === "ALL") {
+      return m.status !== "ARCHIVED";
+    }
+    if (activeFilter === "NEW_24H") {
+      return m.status === "NEW_MATCH" && isPostedWithinLast24Hours(m);
+    }
+    return m.status === activeFilter;
+  });
 
   async function handleStatusChange(matchId: string, nextStatus: MatchStatus) {
     if (readOnly) return;
@@ -356,7 +388,27 @@ export function JobMatchFeed({
       {/* Stage Filter Tabs (below bulk actions, directly above job listing cards) */}
       <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
         <div className="flex flex-wrap items-center gap-2">
-          {["ALL", ...STATUS_OPTIONS].map((status) => (
+          <button
+            onClick={() => setActiveFilter("ALL")}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+              activeFilter === "ALL"
+                ? "bg-emerald-500 text-slate-950"
+                : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+            }`}
+          >
+            ALL
+          </button>
+          <button
+            onClick={() => setActiveFilter("NEW_24H")}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+              activeFilter === "NEW_24H"
+                ? "bg-amber-400 text-slate-950"
+                : "bg-amber-950/70 text-amber-300 border border-amber-800/70 hover:bg-amber-900/70"
+            }`}
+          >
+            🔥 NEW (&lt; 24H) ({fresh24hCount})
+          </button>
+          {STATUS_OPTIONS.map((status) => (
             <button
               key={status}
               onClick={() => setActiveFilter(status)}
@@ -417,6 +469,11 @@ export function JobMatchFeed({
                       {match.is_remote && (
                         <span className="text-xs px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800/60">
                           Remote
+                        </span>
+                      )}
+                      {isPostedWithinLast24Hours(match) && (
+                        <span className="text-xs px-2 py-0.5 rounded bg-amber-950/90 text-amber-300 border border-amber-800/70 font-medium">
+                          🔥 &lt; 24h
                         </span>
                       )}
                       {match.salary_range && (
