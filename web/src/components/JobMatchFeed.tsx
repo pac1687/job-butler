@@ -625,28 +625,39 @@ export function JobMatchFeed({
                     {match.fit_rationale}
                   </p>
 
-                  <div className="flex flex-wrap gap-1.5 items-center">
-                    <span className="text-xs text-slate-400 mr-1">Matched:</span>
-                    {match.matched_skills.map((skill) => (
-                      <span
-                        key={skill}
-                        className="text-xs px-2 py-0.5 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-800/50"
-                      >
-                        ✓ {skill}
+                  <div className="space-y-2">
+                    <div className="flex items-start gap-2">
+                      <span className="w-16 shrink-0 pt-0.5 text-xs text-slate-400">
+                        Matched:
                       </span>
-                    ))}
-                    {match.missing_skills.length > 0 && (
-                      <>
-                        <span className="text-xs text-slate-400 ml-2 mr-1">Gaps:</span>
-                        {match.missing_skills.map((gap) => (
+                      <div className="flex flex-wrap gap-1.5 flex-1 min-w-0">
+                        {match.matched_skills.map((skill) => (
                           <span
-                            key={gap}
-                            className="text-xs px-2 py-0.5 rounded bg-rose-950/70 text-rose-300 border border-rose-800/50"
+                            key={skill}
+                            className="text-xs px-2 py-0.5 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-800/50"
                           >
-                            ! {gap}
+                            ✓ {skill}
                           </span>
                         ))}
-                      </>
+                      </div>
+                    </div>
+
+                    {match.missing_skills.length > 0 && (
+                      <div className="flex items-start gap-2">
+                        <span className="w-16 shrink-0 pt-0.5 text-xs text-slate-400">
+                          Gaps:
+                        </span>
+                        <div className="flex flex-wrap gap-1.5 flex-1 min-w-0">
+                          {match.missing_skills.map((gap) => (
+                            <span
+                              key={gap}
+                              className="text-xs px-2 py-0.5 rounded bg-rose-950/70 text-rose-300 border border-rose-800/50"
+                            >
+                              ! {gap}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
                     )}
                   </div>
                 </>
