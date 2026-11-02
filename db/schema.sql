@@ -97,11 +97,11 @@ CREATE INDEX IF NOT EXISTS idx_task_queue_pending ON job_task_queue(status, crea
 -- Automated 7-Day Unapplied & 30-Day Retention Cascade Function
 CREATE OR REPLACE FUNCTION purge_stale_job_records() RETURNS void AS $$
 BEGIN
-    -- 1. Remove NEW_MATCH and SAVED matches older than 7 days (by posted date or discovery timestamp)
+    -- 1. Remove NEW_MATCH, SAVED, and ARCHIVED matches older than 7 days (by posted date or discovery timestamp)
     DELETE FROM evaluated_matches m
     USING jobs j
     WHERE m.job_id = j.id
-      AND m.status IN ('NEW_MATCH', 'SAVED')
+      AND m.status IN ('NEW_MATCH', 'SAVED', 'ARCHIVED')
       AND (
           m.created_at < NOW() - INTERVAL '7 days'
           OR j.created_at < NOW() - INTERVAL '7 days'

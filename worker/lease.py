@@ -36,7 +36,7 @@ SELECT_EXPIRED_UNAPPLIED_MATCHES_SQL = """
 SELECT m.id, m.job_id, m.resume_storage_key, m.cover_letter_storage_key
 FROM evaluated_matches m
 JOIN jobs j ON j.id = m.job_id
-WHERE m.status IN ('NEW_MATCH', 'SAVED')
+WHERE m.status IN ('NEW_MATCH', 'SAVED', 'ARCHIVED')
   AND (
     m.created_at < NOW() - INTERVAL '7 days'
     OR j.created_at < NOW() - INTERVAL '7 days'
