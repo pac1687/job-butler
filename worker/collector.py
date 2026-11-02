@@ -134,6 +134,136 @@ def parse_and_check_recency(
     return age_days <= max_age_days, parsed_date.isoformat()
 
 
+def _parse_dollar_token(raw_num: str, has_k_suffix: bool = False) -> Optional[float]:
+    """Converts a numeric string like '135,000' or '135' (with k suffix) into a float."""
+    cleaned = raw_num.replace(",", "").strip()
+    if not cleaned:
+        return None
+    try:
+        val = float(cleaned)
+    except ValueError:
+        return None
+    if has_k_suffix or (40.0 <= val <= 500.0 and "." not in cleaned and len(cleaned) <= 3):
+        if has_k_suffix:
+            val *= 1000.0
+    return val
+
+
+def extract_salary_from_text(text: str) -> Optional[str]:
+    """
+    Extracts and normalizes US annual salary ranges (e.g. '$120,000 - $160,000/yr') or hourly
+    pay ranges (e.g. '$60 - $85/hr') from job descriptions or pay-transparency blocks.
+    Ignores funding/ARR/stipend numbers outside individual compensation bounds.
+    """
+    if not text:
+        return None
+
+    # 1. Annual or k-suffixed dollar range: e.g. "$120,000 - $160,000", "$120k - $160k", "USD 125,000 - 165,000"
+    range_pattern = re.compile(
+        r"(?:USD\s*|\$)\s*(\d{2,3}(?:,\d{3})+(?:\.\d{2})?|\d{2,3})\s*([kK])?"
+        r"\s*(?:-|–|—|to)\s*"
+        r"(?:USD\s*|\$)?\s*(\d{2,3}(?:,\d{3})+(?:\.\d{2})?|\d{2,3})\s*([kK])?"
+        r"(?!\s*(?:million|billion|[mMbB]\b))",
+        re.IGNORECASE,
+    )
+    for match in range_pattern.finditer(text):
+        raw_low, k_low, raw_high, k_high = match.groups()
+        has_k = bool(k_low or k_high)
+        low = _parse_dollar_token(raw_low, has_k_suffix=has_k)
+        high = _parse_dollar_token(raw_high, has_k_suffix=has_k)
+        if low is None or high is None:
+            continue
+        # Check if followed immediately by hourly indicator
+        trailing = text[match.end() : match.end() + 28].lower()
+        is_hourly = bool(re.search(r"^\s*(?:/\s*hr|/\s*hour|per\s+hour|an\s+hour|hourly|hr\b)", trailing))
+        if is_hourly and 20.0 <= low <= high <= 300.0:
+            if int(low) == int(high):
+                return f"${int(low)}/hr"
+            return f"${int(low)} - ${int(high)}/hr"
+        if 40_000.0 <= low <= high <= 600_000.0 and high <= low * 3.5:
+            if int(low) == int(high):
+                return f"${int(low):,}/yr"
+            return f"${int(low):,} - ${int(high):,}/yr"
+
+    # 2. Explicit hourly range where '/hr' appears on the first number too: e.g. "$60/hr - $80/hr"
+    hourly_pattern = re.compile(
+        r"\$\s*(\d{2,3}(?:\.\d{2})?)\s*(?:/\s*hr|/\s*hour|per\s+hour)?\s*(?:-|–|—|to)\s*"
+        r"\$?\s*(\d{2,3}(?:\.\d{2})?)\s*(?:/\s*hr|/\s*hour|per\s+hour|an\s+hour|hourly)",
+        re.IGNORECASE,
+    )
+    for match in hourly_pattern.finditer(text):
+        try:
+            low_h = float(match.group(1))
+            high_h = float(match.group(2))
+            if 20.0 <= low_h <= high_h <= 300.0:
+                return f"${int(low_h)} - ${int(high_h)}/hr"
+        except ValueError:
+            continue
+
+    # 3. Single annual salary figure preceded by compensation context (e.g. "Base salary: $145,000")
+    single_pattern = re.compile(
+        r"(?:base\s+salary|annual\s+salary|target\s+salary|salary|compensation|base\s+pay|pay\s+rate)"
+        r"[^$\n]{0,35}\$\s*(\d{2,3}(?:,\d{3})+(?:\.\d{2})?|\d{2,3}\s*[kK])"
+        r"(?!\s*(?:million|billion|[mMbB]\b))",
+        re.IGNORECASE,
+    )
+    for match in single_pattern.finditer(text):
+        token = match.group(1).strip()
+        has_k = token.lower().endswith("k")
+        num_str = token[:-1].strip() if has_k else token
+        val = _parse_dollar_token(num_str, has_k_suffix=has_k)
+        if val is not None and 45_000.0 <= val <= 600_000.0:
+            return f"${int(val):,}/yr"
+
+    return None
+
+
+def format_jobspy_salary(row: Any) -> Optional[str]:
+    """Formats structured `min_amount`, `max_amount`, and `interval` columns from JobSpy DataFrame."""
+    if not hasattr(row, "get"):
+        return None
+    raw_min = row.get("min_amount")
+    raw_max = row.get("max_amount")
+    interval = str(row.get("interval") or "yearly").strip().lower()
+
+    def _valid_num(v: Any) -> Optional[float]:
+        if v is None:
+            return None
+        s = str(v).strip().lower()
+        if not s or s in ("nan", "none", "null", "0", "0.0"):
+            return None
+        try:
+            num = float(v)
+            return num if num > 0 else None
+        except (ValueError, TypeError):
+            return None
+
+    low = _valid_num(raw_min)
+    high = _valid_num(raw_max)
+    if low is None and high is None:
+        return None
+
+    is_hourly = "hour" in interval or "hr" in interval
+    suffix = "/hr" if is_hourly else "/yr"
+
+    if low is not None and high is not None:
+        if is_hourly and 15.0 <= low <= high <= 350.0:
+            return f"${int(low)}/hr" if int(low) == int(high) else f"${int(low)} - ${int(high)}/hr"
+        if 35_000.0 <= low <= high <= 700_000.0:
+            return f"${int(low):,}{suffix}" if int(low) == int(high) else f"${int(low):,} - ${int(high):,}{suffix}"
+    elif low is not None:
+        if is_hourly and 15.0 <= low <= 350.0:
+            return f"${int(low)}/hr"
+        if 35_000.0 <= low <= 700_000.0:
+            return f"${int(low):,}{suffix}"
+    elif high is not None:
+        if is_hourly and 15.0 <= high <= 350.0:
+            return f"${int(high)}/hr"
+        if 35_000.0 <= high <= 700_000.0:
+            return f"${int(high):,}{suffix}"
+    return None
+
+
 class JobCollector:
     """Fetches, cleans, and deduplicates job listings across Tier-1 ATS APIs and Tier-2 JobSpy."""
 
@@ -176,6 +306,7 @@ class JobCollector:
                         url=item.get("absolute_url", url),
                         content_hash=content_hash,
                         description_text=cleaned,
+                        salary_range=extract_salary_from_text(cleaned),
                     )
                 )
         except Exception as exc:
@@ -213,6 +344,7 @@ class JobCollector:
                         url=item.get("hostedUrl", url),
                         content_hash=content_hash,
                         description_text=cleaned,
+                        salary_range=extract_salary_from_text(cleaned),
                     )
                 )
         except Exception as exc:
@@ -234,7 +366,10 @@ class JobCollector:
                 cleaned = clean_job_description(raw_desc)
                 if not title or not cleaned:
                     continue
-                comp = (item.get("compensation") or {}).get("compensationTierSummary")
+                comp = (
+                    (item.get("compensation") or {}).get("compensationTierSummary")
+                    or extract_salary_from_text(cleaned)
+                )
                 content_hash = compute_content_hash(title, board_token, cleaned)
                 jobs.append(
                     ScrapedJob(
@@ -335,6 +470,7 @@ class JobCollector:
                             )
                             if posted_iso:
                                 loc_str = f"{loc_str} • Posted {posted_iso}"
+                            salary = format_jobspy_salary(row) or extract_salary_from_text(cleaned)
                             content_hash = compute_content_hash(title, company, cleaned)
                             collected.append(
                                 ScrapedJob(
@@ -347,6 +483,7 @@ class JobCollector:
                                     url=url,
                                     content_hash=content_hash,
                                     description_text=cleaned,
+                                    salary_range=salary,
                                 )
                             )
                     break
@@ -393,7 +530,11 @@ class JobCollector:
                 cleaned = clean_job_description(raw_desc)
                 if not cleaned:
                     continue
-                salary = str(item.get("salary") or "").strip() or None
+                salary = (
+                    str(item.get("salary") or "").strip()
+                    or extract_salary_from_text(cleaned)
+                    or None
+                )
                 content_hash = compute_content_hash(title, company, cleaned)
                 jobs.append(
                     ScrapedJob(
@@ -476,6 +617,7 @@ class JobCollector:
                         title_el = card.find("h3", class_=re.compile(r"base-search-card__title"))
                         comp_el = card.find("h4", class_=re.compile(r"base-search-card__subtitle"))
                         loc_el = card.find("span", class_=re.compile(r"job-search-card__location"))
+                        sal_el = card.find("span", class_=re.compile(r"job-search-card__salary-info"))
                         time_el = card.find("time", class_=re.compile(r"job-search-card__listdate"))
                         link_el = card.find("a", class_=re.compile(r"base-card__full-link"))
 
@@ -530,6 +672,9 @@ class JobCollector:
                         if not raw_href:
                             continue
 
+                        card_salary = sal_el.get_text(" ", strip=True) if sal_el else None
+                        if card_salary:
+                            card_salary = extract_salary_from_text(card_salary) or card_salary
                         placeholder_desc = (
                             f"{title} at {company} ({loc_str}). "
                             f"Matched search query: {term}."
@@ -549,6 +694,7 @@ class JobCollector:
                                 url=raw_href,
                                 content_hash=content_hash,
                                 description_text=placeholder_desc,
+                                salary_range=card_salary,
                             )
                         )
                     break
@@ -600,11 +746,23 @@ class JobCollector:
                     "div",
                     class_=re.compile(r"show-more-less-html__markup|description__text"),
                 )
+                sal_div = soup.find(
+                    class_=re.compile(r"compensation__salary|salary"),
+                )
                 raw_html = str(desc_div) if desc_div else resp.text
                 cleaned = clean_job_description(raw_html)
                 full_page_text = soup.get_text(" ", strip=True)
                 if cleaned and len(cleaned) > 100:
                     updates: Dict[str, Any] = {"description_text": cleaned}
+                    detail_salary_raw = sal_div.get_text(" ", strip=True) if sal_div else ""
+                    extracted_sal = (
+                        extract_salary_from_text(detail_salary_raw)
+                        or (detail_salary_raw if "$" in detail_salary_raw else None)
+                        or extract_salary_from_text(cleaned)
+                        or job.salary_range
+                    )
+                    if extracted_sal:
+                        updates["salary_range"] = extracted_sal
                     # Verify on the Stage-2 detail page that the listing isn't actually Hybrid or On-site
                     if has_hybrid_or_onsite_restriction(
                         job.title, job.location, f"{cleaned}\n{full_page_text}"
@@ -666,6 +824,7 @@ class JobCollector:
                 url=target_url,
                 content_hash=content_hash,
                 description_text=cleaned,
+                salary_range=extract_salary_from_text(cleaned),
             )
         except Exception as exc:
             logger.error("Failed to fetch on-demand URL %s: %s", target_url, exc)

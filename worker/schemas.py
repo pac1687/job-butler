@@ -46,6 +46,10 @@ class JobEvaluationResult(BaseModel):
         max_length=600,
         description="Concise 2-sentence explanation of technical alignment and gaps",
     )
+    extracted_salary: Optional[str] = Field(
+        default=None,
+        description="Normalized salary or hourly pay range if mentioned in the posting (e.g. '$130,000 - $160,000/yr' or '$65 - $85/hr'), or null if not stated",
+    )
 
 
 class TailoredResumeResponse(BaseModel):

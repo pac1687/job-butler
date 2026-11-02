@@ -63,12 +63,99 @@ async function purgeExpiredUnappliedMatches(): Promise<void> {
   }
 }
 
+function parseDollarValue(rawNum: string, hasK: boolean): number | null {
+  const cleaned = rawNum.replace(/,/g, "").trim();
+  const num = Number(cleaned);
+  if (!Number.isFinite(num) || num <= 0) {
+    return null;
+  }
+  if (hasK) {
+    return num * 1000;
+  }
+  return num;
+}
+
+function extractSalaryFromText(text: string): string | null {
+  if (!text) return null;
+
+  const rangeRegex =
+    /(?:USD\s*|\$)\s*(\d{2,3}(?:,\d{3})+(?:\.\d{2})?|\d{2,3})\s*([kK])?\s*(?:-|–|—|to)\s*(?:USD\s*|\$)?\s*(\d{2,3}(?:,\d{3})+(?:\.\d{2})?|\d{2,3})\s*([kK])?(?!\s*(?:million|billion|[mMbB]\b))/gi;
+
+  let match: RegExpExecArray | null;
+  while ((match = rangeRegex.exec(text)) !== null) {
+    const hasK = Boolean(match[2] || match[4]);
+    const low = parseDollarValue(match[1], hasK);
+    const high = parseDollarValue(match[3], hasK);
+    if (low === null || high === null) continue;
+    const trailing = text.slice(
+      match.index + match[0].length,
+      match.index + match[0].length + 28
+    );
+    const isHourly = /^\s*(?:\/\s*hr|\/\s*hour|per\s+hour|an\s+hour|hourly|hr\b)/i.test(
+      trailing
+    );
+    if (isHourly && low >= 20 && high >= low && high <= 300) {
+      return Math.round(low) === Math.round(high)
+        ? `$${Math.round(low)}/hr`
+        : `$${Math.round(low)} - $${Math.round(high)}/hr`;
+    }
+    if (low >= 40000 && high >= low && high <= 600000 && high <= low * 3.5) {
+      return Math.round(low) === Math.round(high)
+        ? `$${Math.round(low).toLocaleString("en-US")}/yr`
+        : `$${Math.round(low).toLocaleString("en-US")} - $${Math.round(high).toLocaleString("en-US")}/yr`;
+    }
+  }
+
+  const singleRegex =
+    /(?:base\s+salary|annual\s+salary|target\s+salary|salary|compensation|base\s+pay|pay\s+rate)[^$\n]{0,35}\$\s*(\d{2,3}(?:,\d{3})+(?:\.\d{2})?|\d{2,3}\s*[kK])(?!\s*(?:million|billion|[mMbB]\b))/i;
+  const singleMatch = singleRegex.exec(text);
+  if (singleMatch) {
+    const token = singleMatch[1].trim();
+    const hasK = token.toLowerCase().endsWith("k");
+    const rawNum = hasK ? token.slice(0, -1) : token;
+    const val = parseDollarValue(rawNum, hasK);
+    if (val !== null && val >= 45000 && val <= 600000) {
+      return `$${Math.round(val).toLocaleString("en-US")}/yr`;
+    }
+  }
+
+  return null;
+}
+
+async function backfillMissingSalaries(): Promise<void> {
+  try {
+    const sql = getSql();
+    const missing = await sql`
+      SELECT j.id, j.description_text
+      FROM jobs j
+      JOIN evaluated_matches m ON m.job_id = j.id
+      WHERE (j.salary_range IS NULL OR j.salary_range = '')
+        AND j.description_text IS NOT NULL
+        AND j.description_text <> ''
+      LIMIT 100
+    `;
+    for (const row of missing) {
+      const extracted = extractSalaryFromText(String(row.description_text || ""));
+      if (extracted) {
+        await sql`
+          UPDATE jobs
+          SET salary_range = ${extracted}
+          WHERE id = ${String(row.id)}::uuid
+        `;
+      }
+    }
+  } catch {
+    // Non-fatal on dashboard load
+  }
+}
+
 async function fetchDashboardMatches(): Promise<EvaluatedJobMatch[]> {
   if (!process.env.DATABASE_URL) {
     return DEMO_MATCHES;
   }
   try {
     await purgeExpiredUnappliedMatches();
+    await backfillMissingSalaries();
     const sql = getSql();
     const rows = await sql`
       SELECT

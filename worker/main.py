@@ -221,6 +221,10 @@ def process_single_job(
         master_profile=state["master_profile"],
         natural_language_notes=state["preferences"].get("natural_language_notes", ""),
     )
+    if not job.salary_range and evaluation.extracted_salary:
+        candidate_sal = evaluation.extracted_salary.strip()
+        if candidate_sal and candidate_sal.lower() not in {"null", "none", "n/a", "unknown", "not specified", "not stated"}:
+            job = job.model_copy(update={"salary_range": candidate_sal})
     logger.info("2/4 Tailoring resume bullets and cover letter (fit_score=%.1f)...", evaluation.fit_score)
     payload_snapshot = synthesizer.build_tailored_payload(
         job=job,
@@ -280,6 +284,10 @@ def discover_and_score_single_job(
         master_profile=state["master_profile"],
         natural_language_notes=state["preferences"].get("natural_language_notes", ""),
     )
+    if not job.salary_range and evaluation.extracted_salary:
+        candidate_sal = evaluation.extracted_salary.strip()
+        if candidate_sal and candidate_sal.lower() not in {"null", "none", "n/a", "unknown", "not specified", "not stated"}:
+            job = job.model_copy(update={"salary_range": candidate_sal})
     with psycopg.connect(database_url) as job_conn:
         match_id = publisher.persist_evaluated_match(
             conn=job_conn,

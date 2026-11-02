@@ -139,7 +139,8 @@ class JobSynthesizer:
         system_prompt = (
             "You are a precise technical career evaluator. Return ONLY valid JSON matching "
             "keys: fit_score (float 1.0-10.0), matched_skills (list of strings), "
-            "missing_skills (list of strings), fit_rationale (2 concise sentences)."
+            "missing_skills (list of strings), fit_rationale (2 concise sentences), "
+            "extracted_salary (normalized pay range string like '$130,000 - $160,000/yr' or '$65 - $85/hr' if stated in job_description, or null if not mentioned)."
         )
         user_prompt = json.dumps(
             {

@@ -7,7 +7,12 @@ from typing import List
 from unittest.mock import MagicMock, patch
 
 from worker.cleaner import compute_content_hash
-from worker.collector import JobCollector, parse_and_check_recency
+from worker.collector import (
+    JobCollector,
+    extract_salary_from_text,
+    format_jobspy_salary,
+    parse_and_check_recency,
+)
 from worker.preflight import check_lm_studio_health
 from worker.ranker import (
     SemanticRanker,
@@ -200,6 +205,30 @@ def test_filter_by_location_rejects_non_local_hybrid_and_onsite_roles() -> None:
         allow_remote=True,
     )
     assert [j.company for j in kept] == ["KCTech", "RemoteCo"]
+
+
+def test_extract_salary_from_text_and_jobspy_columns() -> None:
+    assert (
+        extract_salary_from_text("Pay transparency: The base pay range is $135,000 - $175,000 per year.")
+        == "$135,000 - $175,000/yr"
+    )
+    assert (
+        extract_salary_from_text("Compensation: $120k to $150k + equity.")
+        == "$120,000 - $150,000/yr"
+    )
+    assert (
+        extract_salary_from_text("Contract rate is $65 - $85 per hour depending on experience.")
+        == "$65 - $85/hr"
+    )
+    assert (
+        extract_salary_from_text("We raised $50,000,000 in Series B funding and offer a $500 home office stipend.")
+        is None
+    )
+    assert (
+        format_jobspy_salary({"min_amount": 130000, "max_amount": 160000, "interval": "yearly"})
+        == "$130,000 - $160,000/yr"
+    )
+
 
 
 
