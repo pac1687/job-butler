@@ -18,7 +18,7 @@ from worker.collector import JobCollector
 from worker.config import WorkerConfig
 from worker.lease import LeaseCoordinator
 from worker.preflight import check_lm_studio_health, enforce_preflight_or_exit
-from worker.publisher import ArtifactPublisher
+from worker.publisher import ArtifactPublisher, generate_artifact_filenames
 from worker.ranker import SemanticRanker, is_eligible_remote_or_local
 from worker.schemas import JobEvaluationResult, ScrapedJob
 from worker.synthesizer import JobSynthesizer, extract_searchable_skill_pool
@@ -271,12 +271,17 @@ def process_single_job(
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir)
-        logger.info("3/4 Compiling single-page Typst PDFs...")
+        resume_name, cover_name = generate_artifact_filenames(
+            user_name=payload_snapshot.get("basics", {}).get("name") or "Candidate",
+            job_title=job.title,
+            company_name=job.company,
+        )
+        logger.info("3/4 Compiling single-page Typst PDFs ('%s', '%s')...", resume_name, cover_name)
         resume_pdf = typesetter.compile_resume_with_auto_trim(
-            payload_snapshot, tmp_path / "resume.pdf"
+            payload_snapshot, tmp_path / resume_name
         )
         cover_pdf = typesetter.compile_cover_letter_with_auto_trim(
-            payload_snapshot, tmp_path / "cover_letter.pdf"
+            payload_snapshot, tmp_path / cover_name
         )
         logger.info("4/4 Uploading artifacts to S3 and persisting match to Neon...")
         storage_keys = publisher.upload_artifacts_to_r2(
@@ -284,6 +289,8 @@ def process_single_job(
             resume_pdf_path=resume_pdf,
             cover_letter_pdf_path=cover_pdf,
             payload_snapshot=payload_snapshot,
+            job_title=job.title,
+            company_name=job.company,
         )
 
     return publisher.persist_evaluated_match(
@@ -660,18 +667,25 @@ def poll_task_queue_once(config: WorkerConfig) -> bool:
                 )
                 with tempfile.TemporaryDirectory() as tmp_dir:
                     tmp_path = Path(tmp_dir)
-                    logger.info("Compiling single-page Typst PDFs for '%s' at '%s'...", job.title, job.company)
+                    resume_name, cover_name = generate_artifact_filenames(
+                        user_name=payload_snapshot.get("basics", {}).get("name") or "Candidate",
+                        job_title=job.title,
+                        company_name=job.company,
+                    )
+                    logger.info("Compiling single-page Typst PDFs ('%s', '%s')...", resume_name, cover_name)
                     resume_pdf = typesetter.compile_resume_with_auto_trim(
-                        payload_snapshot, tmp_path / "resume.pdf"
+                        payload_snapshot, tmp_path / resume_name
                     )
                     cover_pdf = typesetter.compile_cover_letter_with_auto_trim(
-                        payload_snapshot, tmp_path / "cover_letter.pdf"
+                        payload_snapshot, tmp_path / cover_name
                     )
                     storage_keys = publisher.upload_artifacts_to_r2(
                         job_content_hash=job.content_hash,
                         resume_pdf_path=resume_pdf,
                         cover_letter_pdf_path=cover_pdf,
                         payload_snapshot=payload_snapshot,
+                        job_title=job.title,
+                        company_name=job.company,
                     )
 
                 with psycopg.connect(config.database_url) as conn:

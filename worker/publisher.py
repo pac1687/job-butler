@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, Optional
 import boto3
@@ -35,6 +36,39 @@ INSERT INTO evaluated_matches (
 VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s::jsonb, 'NEW_MATCH')
 RETURNING id;
 """
+
+
+def sanitize_filename_part(text: str) -> str:
+    """Sanitizes a string component for safe use in filenames across operating systems and S3 keys."""
+    if not text:
+        return ""
+    # Replace slashes, backslashes, colons with spaced hyphen
+    s = re.sub(r"[\/\\:]+", " - ", text)
+    # Remove characters illegal in filenames across OS: * ? " < > |
+    s = re.sub(r'[*?"<>|]+', "", s)
+    # Normalize whitespace and multiple hyphens
+    s = re.sub(r"\s+", " ", s)
+    s = re.sub(r"\s*-\s*-\s*", " - ", s)
+    return s.strip(" -_.")
+
+
+def generate_artifact_filenames(
+    user_name: str = "Candidate",
+    job_title: str = "Software Engineer",
+    company_name: str = "Company",
+) -> tuple[str, str]:
+    """
+    Generates standardized filenames for resume and cover letter artifacts:
+      Resume: [User Name] - [Job Title] - [Company Name].pdf
+      Cover Letter: [User Name] - [Company Name] - Cover Letter.pdf
+    """
+    safe_name = sanitize_filename_part(user_name) or "Candidate"
+    safe_title = sanitize_filename_part(job_title) or "Job Title"
+    safe_company = sanitize_filename_part(company_name) or "Company"
+
+    resume_filename = f"{safe_name} - {safe_title} - {safe_company}.pdf"
+    cover_letter_filename = f"{safe_name} - {safe_company} - Cover Letter.pdf"
+    return resume_filename, cover_letter_filename
 
 
 class ArtifactPublisher:
@@ -71,14 +105,29 @@ class ArtifactPublisher:
         resume_pdf_path: Path,
         cover_letter_pdf_path: Path,
         payload_snapshot: Dict[str, Any],
+        job_title: str = "",
+        company_name: str = "",
     ) -> Dict[str, str]:
         """
-        Uploads `resume.pdf`, `cover_letter.pdf`, and `payload_snapshot.json` to private R2 bucket.
+        Uploads standardized `Justin Pacubas - [Job Title] - [Company Name].pdf`,
+        `Justin Pacubas - [Company Name] - Cover Letter.pdf`, and `payload_snapshot.json` to S3/R2 bucket.
         Returns the object storage keys.
         """
+        basics = payload_snapshot.get("basics") or {}
+        user_name = basics.get("name") or "Candidate"
+        target_job = payload_snapshot.get("target_job") or {}
+        title = job_title or target_job.get("title") or "Job Title"
+        company = company_name or target_job.get("company") or "Company"
+
+        resume_filename, cover_filename = generate_artifact_filenames(
+            user_name=user_name,
+            job_title=title,
+            company_name=company,
+        )
+
         prefix = f"matches/{job_content_hash[:16]}"
-        resume_key = f"{prefix}/resume.pdf"
-        cover_key = f"{prefix}/cover_letter.pdf"
+        resume_key = f"{prefix}/{resume_filename}"
+        cover_key = f"{prefix}/{cover_filename}"
         snapshot_key = f"{prefix}/payload_snapshot.json"
 
         endpoint = (self.config.r2_endpoint_url or "").strip()
@@ -104,13 +153,19 @@ class ArtifactPublisher:
             str(resume_pdf_path),
             bucket,
             resume_key,
-            ExtraArgs={"ContentType": "application/pdf"},
+            ExtraArgs={
+                "ContentType": "application/pdf",
+                "ContentDisposition": f'inline; filename="{resume_filename}"',
+            },
         )
         self.s3.upload_file(
             str(cover_letter_pdf_path),
             bucket,
             cover_key,
-            ExtraArgs={"ContentType": "application/pdf"},
+            ExtraArgs={
+                "ContentType": "application/pdf",
+                "ContentDisposition": f'inline; filename="{cover_filename}"',
+            },
         )
         self.s3.put_object(
             Bucket=bucket,
@@ -118,7 +173,13 @@ class ArtifactPublisher:
             Body=json.dumps(payload_snapshot, indent=2).encode("utf-8"),
             ContentType="application/json",
         )
-        logger.info("Uploaded PDFs and snapshot to R2 bucket '%s' under '%s'", bucket, prefix)
+        logger.info(
+            "Uploaded PDFs ('%s', '%s') and snapshot to R2 bucket '%s' under '%s'",
+            resume_filename,
+            cover_filename,
+            bucket,
+            prefix,
+        )
         return {
             "resume_storage_key": resume_key,
             "cover_letter_storage_key": cover_key,

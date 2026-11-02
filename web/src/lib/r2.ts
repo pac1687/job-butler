@@ -9,6 +9,33 @@ import { getSql } from "@/lib/db";
 
 const PRESIGNED_TTL_SECONDS = 900; // 15 minutes per SPEC.md Section 5
 
+export function sanitizeFilenamePart(text: string): string {
+  if (!text) return "";
+  return text
+    .replace(/[\/\\:]+/g, " - ")
+    .replace(/[*?"<>|]+/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/\s*-\s*-\s*/g, " - ")
+    .trim()
+    .replace(/^[ -_.]+|[ -_.]+$/g, "");
+}
+
+export function generateArtifactFilename(
+  type: string,
+  userName: string = "Candidate",
+  jobTitle: string = "Job Title",
+  companyName: string = "Company"
+): string {
+  const safeName = sanitizeFilenamePart(userName) || "Candidate";
+  const safeTitle = sanitizeFilenamePart(jobTitle) || "Job Title";
+  const safeCompany = sanitizeFilenamePart(companyName) || "Company";
+
+  if (type === "cover_letter") {
+    return `${safeName} - ${safeCompany} - Cover Letter.pdf`;
+  }
+  return `${safeName} - ${safeTitle} - ${safeCompany}.pdf`;
+}
+
 export function createR2Client(): S3Client {
   const endpoint =
     process.env.S3_ENDPOINT_URL ||
@@ -40,7 +67,8 @@ export function createR2Client(): S3Client {
 
 export async function generatePresignedArtifactUrl(
   storageKey: string,
-  expiresInSeconds: number = PRESIGNED_TTL_SECONDS
+  expiresInSeconds: number = PRESIGNED_TTL_SECONDS,
+  filename?: string
 ): Promise<string> {
   const bucket =
     process.env.S3_BUCKET_NAME ||
@@ -50,6 +78,14 @@ export async function generatePresignedArtifactUrl(
   const command = new GetObjectCommand({
     Bucket: bucket,
     Key: storageKey,
+    ...(filename
+      ? {
+          ResponseContentDisposition: `inline; filename="${filename.replace(
+            /"/g,
+            ""
+          )}"`,
+        }
+      : {}),
   });
   return getSignedUrl(client, command, { expiresIn: expiresInSeconds });
 }
@@ -125,15 +161,22 @@ export async function handleArtifactPresignRequest(
     (async (id: string) => {
       const sql = getSql();
       const rows = await sql`
-        SELECT resume_storage_key, cover_letter_storage_key
-        FROM evaluated_matches
-        WHERE id = ${id}
+        SELECT m.resume_storage_key, m.cover_letter_storage_key,
+               j.title as job_title, j.company as company,
+               p.basics->>'name' as user_name
+        FROM evaluated_matches m
+        LEFT JOIN jobs j ON j.id = m.job_id
+        LEFT JOIN master_profiles p ON p.is_active = TRUE
+        WHERE m.id = ${id}
         LIMIT 1
       `;
       if (!rows || rows.length === 0) return null;
       return {
         resume_storage_key: rows[0].resume_storage_key as string | null,
         cover_letter_storage_key: rows[0].cover_letter_storage_key as string | null,
+        job_title: (rows[0].job_title as string) || "Job Title",
+        company: (rows[0].company as string) || "Company",
+        user_name: (rows[0].user_name as string) || "Candidate",
       };
     });
 
@@ -151,8 +194,20 @@ export async function handleArtifactPresignRequest(
     return { status: 404, body: { error: "Artifact key not available for this match" } };
   }
 
+  const rec = record as {
+    job_title?: string;
+    company?: string;
+    user_name?: string;
+  };
+  const filename = generateArtifactFilename(
+    artifactType,
+    rec.user_name || "Candidate",
+    rec.job_title || "Job Title",
+    rec.company || "Company"
+  );
+
   const presign = deps.presignFn || generatePresignedArtifactUrl;
-  const signedUrl = await presign(storageKey);
+  const signedUrl = await presign(storageKey, PRESIGNED_TTL_SECONDS, filename);
 
   return {
     status: 200,
@@ -160,6 +215,7 @@ export async function handleArtifactPresignRequest(
       url: signedUrl,
       expiresInSeconds: 900,
       storageKey,
+      filename,
     },
   };
 }

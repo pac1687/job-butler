@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import List
 from unittest.mock import patch
+from worker.publisher import generate_artifact_filenames, sanitize_filename_part
 from worker.schemas import JobEvaluationResult, ScrapedJob
 from worker.synthesizer import (
     JobSynthesizer,
@@ -504,5 +505,35 @@ def test_extract_searchable_skill_pool_indexes_bullet_skills_and_curated_skills(
     assert "claude" in pool_lowers
     assert "pgp" in pool_lowers
     assert "bestcrypt" in pool_lowers
+
+
+def test_generate_artifact_filenames_standardized_format() -> None:
+    # Standard valid inputs
+    resume, cover = generate_artifact_filenames(
+        user_name="Justin Pacubas",
+        job_title="Senior Full-Stack Engineer",
+        company_name="Pushly",
+    )
+    assert resume == "Justin Pacubas - Senior Full-Stack Engineer - Pushly.pdf"
+    assert cover == "Justin Pacubas - Pushly - Cover Letter.pdf"
+
+    # Edge case with slashes, colons, quotes in title/company
+    resume_clean, cover_clean = generate_artifact_filenames(
+        user_name="Justin Pacubas",
+        job_title="Full-Stack / Platform Engineer: Core",
+        company_name='Pushly, "Inc."',
+    )
+    assert resume_clean == "Justin Pacubas - Full-Stack - Platform Engineer - Core - Pushly, Inc.pdf"
+    assert cover_clean == "Justin Pacubas - Pushly, Inc - Cover Letter.pdf"
+
+    # Default fallback when empty
+    resume_def, cover_def = generate_artifact_filenames(
+        user_name="",
+        job_title="",
+        company_name="",
+    )
+    assert resume_def == "Candidate - Job Title - Company.pdf"
+    assert cover_def == "Candidate - Company - Cover Letter.pdf"
+
 
 
