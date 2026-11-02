@@ -237,11 +237,72 @@ def verify_context_and_entities_preserved(
     return True, None
 
 
+PARTICIPLE_TO_PAST: Dict[str, str] = {
+    "migrating": "migrated",
+    "executing": "executed",
+    "delivering": "delivered",
+    "managing": "managed",
+    "supporting": "supported",
+    "training": "trained",
+    "building": "built",
+    "leading": "led",
+    "designing": "designed",
+    "implementing": "implemented",
+    "configuring": "configured",
+    "maintaining": "maintained",
+    "developing": "developed",
+    "creating": "created",
+    "engineering": "engineered",
+    "automating": "automated",
+    "providing": "provided",
+    "resolving": "resolved",
+    "performing": "performed",
+    "deploying": "deployed",
+    "establishing": "established",
+    "integrating": "integrated",
+    "authoring": "authored",
+    "architecting": "architected",
+    "standardizing": "standardized",
+    "spearheading": "spearheaded",
+    "optimizing": "optimized",
+    "modernizing": "modernized",
+}
+
+
+def replace_while_conjunction(text: str) -> str:
+    """
+    Replaces awkward ', while [action-ing]' conjunctions with a clean semicolon
+    and past-tense verb (e.g. '; migrated ...' or '; executed ...').
+    Eliminates the false implication of simultaneous temporal concurrency.
+    """
+    if not text or "while" not in text.lower():
+        return text
+
+    def _replace_clause(match: re.Match[str]) -> str:
+        participle = match.group(1).lower()
+        if participle in PARTICIPLE_TO_PAST:
+            past_verb = PARTICIPLE_TO_PAST[participle]
+        elif participle.endswith("ing"):
+            base = participle[:-3]
+            if base.endswith("e"):
+                past_verb = base + "d"
+            else:
+                past_verb = base + "ed"
+        else:
+            past_verb = participle
+        return f"; {past_verb}"
+
+    # Match ', while <verb-ing>' or ' while <verb-ing>'
+    cleaned = re.sub(r",?\s+while\s+([A-Za-z]+ing)\b", _replace_clause, text, flags=re.IGNORECASE)
+    return cleaned
+
+
 def merge_two_bullets(b1: str, b2: str) -> str:
     """
     Deterministically consolidates two bullet points into a single coherent compound sentence.
     Unifies leading topic headers so that no header is ever placed mid-sentence.
-    Joins the two clauses naturally with ', and '.
+    Joins the two clauses with a clean semicolon (';') to maintain parallel past-tense verbs
+    without implying temporal simultaneity.
     """
     clean1 = (b1 or "").strip().rstrip(".")
     clean2 = (b2 or "").strip().rstrip(".")
@@ -284,7 +345,7 @@ def merge_two_bullets(b1: str, b2: str) -> str:
     else:
         second_clause = first_w[0].lower() + first_w[1:] + (" " + " ".join(words2[1:]) if len(words2) > 1 else "")
 
-    return f"{prefix}{text1}, and {second_clause}."
+    return f"{prefix}{text1}; {second_clause}."
 
 
 def verify_complete_bullet(

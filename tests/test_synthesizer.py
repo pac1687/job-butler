@@ -339,7 +339,7 @@ def test_combine_bullets_coherently_merges_two_accomplishments() -> None:
     b1 = "Delivered remote hardware and software technical support to field insurance agents and trained staff on proprietary rating systems."
     b2 = "Executed endpoint disk encryption (PGP, BestCrypt) across field agent machines to safeguard sensitive policyholder data."
 
-    # Test LLM response
+    # Test LLM response with 'while' converted to clean semicolon coordination
     combined_llm = (
         "Delivered remote hardware and software support on proprietary rating systems, "
         "while executing endpoint disk encryption (PGP, BestCrypt) to safeguard sensitive data."
@@ -351,8 +351,9 @@ def test_combine_bullets_coherently_merges_two_accomplishments() -> None:
             company="ANPAC",
             job_title="Software Engineer",
         )
-        assert res == combined_llm
+        assert "while" not in res
         assert "Delivered remote" in res
+        assert "; executed endpoint disk encryption" in res
         assert "PGP" in res
 
     # Test fallback merge when LLM call fails
@@ -364,7 +365,8 @@ def test_combine_bullets_coherently_merges_two_accomplishments() -> None:
             job_title="Software Engineer",
         )
         assert "Delivered remote hardware" in res_fallback
-        assert "and executed endpoint disk encryption (PGP, BestCrypt)" in res_fallback
+        assert "; executed endpoint disk encryption (PGP, BestCrypt)" in res_fallback
+        assert "while" not in res_fallback
 
 
 def test_build_tailored_payload_attaches_combined_bullet_for_two_bullet_roles() -> None:

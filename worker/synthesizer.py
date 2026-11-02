@@ -24,6 +24,7 @@ from worker.validator import (
     contains_forbidden_term,
     extract_named_entities_and_terms,
     merge_two_bullets,
+    replace_while_conjunction,
 )
 
 logger = logging.getLogger(__name__)
@@ -535,6 +536,7 @@ class JobSynthesizer:
                 schema_model=SingleBulletResponse,
             )
             candidate = str(data.get("bullet") or source_bullet).strip()
+            candidate = replace_while_conjunction(candidate)
         except Exception as exc:
             logger.warning("Bullet rephrase LLM call failed; keeping verbatim bullet: %s", exc)
             candidate = source_bullet
@@ -590,13 +592,14 @@ class JobSynthesizer:
             f"for the role '{role_title}' at '{company}'. Consolidate them into ONE coherent, high-impact resume bullet point "
             f"tailored to the target job '{job_title}'. "
             "CRITICAL COHERENCE RULES: "
-            "1. COHERENCE: The output MUST be a single, natural, grammatically unified sentence ending with a period. "
-            "Do NOT awkwardly paste sentences together with ', while ...'. Instead, synthesize them into a clean, flowing compound sentence (e.g. 'Engineered X ..., and built Y ...'). "
-            "2. NO FIRST-BULLET BIAS: Neither accomplishment is inherently more important; synthesize both to reflect the candidate's strongest capabilities for the target job. "
-            f"3. HEADERS: {header_instruction} "
-            "4. TRUTHFULNESS & METRICS: Preserve all numbers, metrics, versions, and named technologies verbatim (e.g. PGP, BestCrypt, rating systems, Node, React). Do not invent tools or metrics. "
-            "5. LENGTH: The final bullet must be concise (maximum 185 characters). "
-            f"6. FORBIDDEN TERMS: Never include any of these terms: {list(forbidden_terms)}. "
+            "1. CONJUNCTIONS: NEVER use 'while' to connect distinct accomplishments (it falsely implies simultaneous concurrency). "
+            "Instead, connect independent accomplishments using a semicolon ('; ') with parallel past-tense verbs (e.g. 'Engineered X...; migrated Y...') or a coordinated conjunction (', and [past verb]'). "
+            "2. COHERENCE: The output MUST be a single, natural, grammatically unified sentence ending with a period. "
+            "3. NO FIRST-BULLET BIAS: Neither accomplishment is inherently more important; synthesize both to reflect the candidate's strongest capabilities for the target job. "
+            f"4. HEADERS: {header_instruction} "
+            "5. TRUTHFULNESS & METRICS: Preserve all numbers, metrics, versions, and named technologies verbatim (e.g. PGP, BestCrypt, rating systems, Node, React). Do not invent tools or metrics. "
+            "6. LENGTH: The final bullet must be concise (maximum 185 characters). "
+            f"7. FORBIDDEN TERMS: Never include any of these terms: {list(forbidden_terms)}. "
             'Return ONLY JSON: {"bullet": "..."}'
         )
         user_prompt = json.dumps(
@@ -616,6 +619,7 @@ class JobSynthesizer:
                 schema_model=SingleBulletResponse,
             )
             candidate = str(data.get("bullet") or "").strip()
+            candidate = replace_while_conjunction(candidate)
         except Exception as exc:
             logger.warning("consolidate_bullets LLM call failed (%s); using heuristic fallback.", exc)
             candidate = merge_two_bullets(b1, b2)

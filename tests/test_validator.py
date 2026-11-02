@@ -231,7 +231,8 @@ def test_merge_two_bullets_combines_primary_and_secondary_coherently() -> None:
 
     merged = merge_two_bullets(b1, b2)
     assert "Delivered remote hardware" in merged
-    assert "and executed endpoint disk encryption (PGP, BestCrypt)" in merged
+    assert "; executed endpoint disk encryption (PGP, BestCrypt)" in merged
+    assert "while" not in merged
     assert merged.endswith(".")
 
 
@@ -244,7 +245,20 @@ def test_merge_two_bullets_strips_leading_header_from_second_bullet() -> None:
     merged = merge_two_bullets(b1, b2)
     assert "Tooling & Automation:" not in merged
     assert "while tooling" not in merged
-    assert "and implemented template cloning" in merged
+    assert "; implemented template cloning" in merged
+    assert "while" not in merged
+
+
+def test_replace_while_conjunction_converts_to_semicolon_past_tense() -> None:
+    from worker.validator import replace_while_conjunction
+
+    sentence = (
+        "Engineered scalable REST APIs and data access layers using Node.js, Express, and Knex, "
+        "while migrating codebases to ES6 and configuring Webpack build tooling."
+    )
+    res = replace_while_conjunction(sentence)
+    assert "while" not in res
+    assert "; migrated codebases to ES6 and configuring Webpack build tooling." in res
 
 
 def test_validator_validate_combined_bullet_accepts_valid_and_catches_forbidden() -> None:
