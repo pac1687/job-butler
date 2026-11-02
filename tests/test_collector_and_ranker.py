@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import List
 from unittest.mock import MagicMock, patch
 
 from worker.cleaner import compute_content_hash
-from worker.collector import JobCollector
+from worker.collector import JobCollector, parse_and_check_recency
 from worker.preflight import check_lm_studio_health
 from worker.ranker import (
     SemanticRanker,
@@ -133,5 +134,21 @@ def test_diversify_by_company_interleaves_and_caps_per_company() -> None:
     diversified = diversify_by_company(scored, max_per_company=2)
     # Round 1 picks #1 from Stripe, Linear, Ramp; Round 2 picks #2 from Stripe; Role 3 from Stripe is dropped
     assert [j.company for j, _ in diversified] == ["Stripe", "Linear", "Ramp", "Stripe"]
+
+
+def test_parse_and_check_recency_filters_older_than_7_days() -> None:
+    ref = date(2026, 11, 1)
+    ok_recent, iso_recent = parse_and_check_recency(
+        "2026-10-28T14:20:00", max_age_days=7, reference_date=ref
+    )
+    assert ok_recent is True
+    assert iso_recent == "2026-10-28"
+
+    ok_stale, iso_stale = parse_and_check_recency(
+        "2026-10-15T09:00:00", max_age_days=7, reference_date=ref
+    )
+    assert ok_stale is False
+    assert iso_stale == "2026-10-15"
+
 
 

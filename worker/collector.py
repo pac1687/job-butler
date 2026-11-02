@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime, timezone
 import logging
 import random
 import re
 import time
-from typing import Any, Callable, Dict, Iterable, List, Optional, Set
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 from bs4 import BeautifulSoup
 import httpx
 
@@ -92,6 +93,44 @@ def consolidate_search_queries(titles: List[str], max_queries: int = 8) -> List[
         if t not in selected:
             selected.append(t)
     return selected[:max_queries]
+
+
+def parse_and_check_recency(
+    raw_date: Any,
+    max_age_days: int = 7,
+    reference_date: Optional[date] = None,
+) -> Tuple[bool, Optional[str]]:
+    """
+    Parses a posting date (`datetime`, `date`, or ISO string like '2026-10-29T14:20:00')
+    and checks whether it was posted within `max_age_days` (default 7 days).
+    Returns `(is_within_window, 'YYYY-MM-DD' or None)`.
+    """
+    if raw_date is None:
+        return True, None
+
+    today = reference_date or datetime.now(timezone.utc).date()
+    parsed_date: Optional[date] = None
+
+    if isinstance(raw_date, datetime):
+        parsed_date = raw_date.date()
+    elif isinstance(raw_date, date):
+        parsed_date = raw_date
+    else:
+        raw_str = str(raw_date).strip()
+        if not raw_str or raw_str.lower() in ("nan", "nat", "none", "null"):
+            return True, None
+        iso_match = re.search(r"(\d{4}-\d{2}-\d{2})", raw_str)
+        if iso_match:
+            try:
+                parsed_date = date.fromisoformat(iso_match.group(1))
+            except ValueError:
+                parsed_date = None
+
+    if parsed_date is None:
+        return True, None
+
+    age_days = (today - parsed_date).days
+    return age_days <= max_age_days, parsed_date.isoformat()
 
 
 class JobCollector:
@@ -221,12 +260,12 @@ class JobCollector:
         is_remote: bool = True,
         results_wanted: int = 25,
         distance: int = 50,
+        max_age_days: int = 7,
         max_retries: int = 2,
     ) -> List[ScrapedJob]:
         """
-        Tier-2 Aggregator Discovery using JobSpy (Indeed batch GraphQL with 50-mile metro radius)
-        with exponential backoff and jittered delays (1.5-3.5s).
-        Avoids LinkedIn unproxied scraping which ignores `is_remote` and triggers HTTP 429 blocks.
+        Tier-2 Aggregator Discovery using JobSpy (Indeed batch GraphQL with 50-mile metro radius
+        and `hours_old` recency filter) with exponential backoff and jittered delays.
         """
         try:
             from jobspy import scrape_jobs  # type: ignore
@@ -234,6 +273,7 @@ class JobCollector:
             logger.warning("python-jobspy is not installed; skipping Tier-2 aggregator discovery.")
             return []
 
+        hours_old = max(24, int(max_age_days) * 24)
         collected: List[ScrapedJob] = []
         for term in search_terms:
             jitter = random.uniform(0.8, 1.8)
@@ -249,6 +289,7 @@ class JobCollector:
                         country_indeed="USA",
                         results_wanted=results_wanted,
                         is_remote=is_remote,
+                        hours_old=hours_old,
                     )
                     if df is not None and not df.empty:
                         for _, row in df.iterrows():
@@ -259,6 +300,12 @@ class JobCollector:
                                 or company.lower() == "nan"
                                 or company.lower() in EXCLUDED_TIER2_COMPANIES
                             ):
+                                continue
+                            is_recent, posted_iso = parse_and_check_recency(
+                                row.get("date_posted"),
+                                max_age_days=max_age_days,
+                            )
+                            if not is_recent:
                                 continue
                             raw_desc = str(row.get("description") or "").strip()
                             url = str(row.get("job_url") or "").strip()
@@ -276,6 +323,8 @@ class JobCollector:
                                 or "remote" in loc_str.lower()
                                 or "remote" in title.lower()
                             )
+                            if posted_iso:
+                                loc_str = f"{loc_str} • Posted {posted_iso}"
                             content_hash = compute_content_hash(title, company, cleaned)
                             collected.append(
                                 ScrapedJob(
@@ -304,8 +353,12 @@ class JobCollector:
 
         return collected
 
-    def fetch_remotive_remote_jobs(self, limit: int = 50) -> List[ScrapedJob]:
-        """Fetches remote startup/mid-sized software roles from the Remotive public API."""
+    def fetch_remotive_remote_jobs(
+        self,
+        limit: int = 50,
+        max_age_days: int = 7,
+    ) -> List[ScrapedJob]:
+        """Fetches remote startup/mid-sized software roles posted within `max_age_days` from Remotive API."""
         url = f"https://remotive.com/api/remote-jobs?category=software-dev&limit={limit}"
         jobs: List[ScrapedJob] = []
         try:
@@ -317,7 +370,15 @@ class JobCollector:
                 company = str(item.get("company_name") or "Unknown").strip()
                 if not title or company.lower() in EXCLUDED_TIER2_COMPANIES:
                     continue
+                is_recent, posted_iso = parse_and_check_recency(
+                    item.get("publication_date"),
+                    max_age_days=max_age_days,
+                )
+                if not is_recent:
+                    continue
                 location = str(item.get("candidate_required_location") or "Remote").strip()
+                if posted_iso:
+                    location = f"{location} • Posted {posted_iso}"
                 raw_desc = str(item.get("description") or "")
                 cleaned = clean_job_description(raw_desc)
                 if not cleaned:
@@ -348,12 +409,13 @@ class JobCollector:
         location: str = "United States",
         is_remote: bool = True,
         distance: int = 50,
+        max_age_days: int = 7,
         max_retries: int = 2,
     ) -> List[ScrapedJob]:
         """
         Two-stage rate-limit-safe LinkedIn Guest Search scraper (Stage 1: Search Cards).
         Makes 1 lightweight search request per title using LinkedIn's native `f_WT=2` (Remote)
-        and `f_TPR=r604800` (Past 7 days) filters without hammering individual job pages.
+        and `f_TPR=r{seconds}` (default past 7 days) filters, plus verifies card `<time datetime>`.
         Full descriptions are lazily hydrated via `hydrate_linkedin_description` only for top matches.
         """
         search_url = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
@@ -364,6 +426,7 @@ class JobCollector:
             ),
             "Accept-Language": "en-US,en;q=0.9",
         }
+        tpr_seconds = max(86400, int(max_age_days) * 86400)
         collected: List[ScrapedJob] = []
 
         for term in search_terms:
@@ -371,7 +434,7 @@ class JobCollector:
             params: Dict[str, str] = {
                 "keywords": term,
                 "location": location,
-                "f_TPR": "r604800",  # Past 7 days
+                "f_TPR": f"r{tpr_seconds}",
                 "start": "0",
             }
             if is_remote:
@@ -398,6 +461,7 @@ class JobCollector:
                         title_el = card.find("h3", class_=re.compile(r"base-search-card__title"))
                         comp_el = card.find("h4", class_=re.compile(r"base-search-card__subtitle"))
                         loc_el = card.find("span", class_=re.compile(r"job-search-card__location"))
+                        time_el = card.find("time", class_=re.compile(r"job-search-card__listdate"))
                         link_el = card.find("a", class_=re.compile(r"base-card__full-link"))
 
                         title = title_el.get_text(strip=True) if title_el else ""
@@ -409,6 +473,14 @@ class JobCollector:
                         ):
                             continue
 
+                        raw_datetime = time_el.get("datetime") if time_el else None
+                        is_recent, posted_iso = parse_and_check_recency(
+                            raw_datetime,
+                            max_age_days=max_age_days,
+                        )
+                        if not is_recent:
+                            continue
+
                         loc_str = (
                             loc_el.get_text(strip=True)
                             if loc_el
@@ -416,6 +488,8 @@ class JobCollector:
                         )
                         if is_remote and "remote" not in loc_str.lower():
                             loc_str = f"{loc_str} (Remote)"
+                        if posted_iso:
+                            loc_str = f"{loc_str} • Posted {posted_iso}"
                         raw_href = str(link_el.get("href") or "").split("?")[0].strip() if link_el else ""
                         urn = str(card.get("data-entity-urn") or "")
                         job_id_match = re.search(r"(\d{7,12})", urn or raw_href)
