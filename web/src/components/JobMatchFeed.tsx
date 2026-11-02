@@ -507,23 +507,30 @@ export function JobMatchFeed({
               key={match.id}
               className="bg-slate-900/80 border border-slate-800 rounded-xl p-5 space-y-4 hover:border-slate-700 transition"
             >
-              <div className="flex flex-wrap items-start justify-between gap-4">
-                <div className="flex items-start gap-3">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex items-start gap-3 flex-1 min-w-0">
                   {!readOnly && (
                     <input
                       type="checkbox"
                       aria-label={`Select ${match.title} at ${match.company} for batch PDF generation`}
                       checked={selectedJobIds.includes(match.job_id)}
                       onChange={() => toggleSelectJob(match.job_id)}
-                      className="mt-1.5 h-4 w-4 rounded border-slate-600 bg-slate-950 text-emerald-500 focus:ring-emerald-500 cursor-pointer"
+                      className="mt-1.5 h-4 w-4 shrink-0 rounded border-slate-600 bg-slate-950 text-emerald-500 focus:ring-emerald-500 cursor-pointer"
                     />
                   )}
-                  <div>
+                  <div className="flex-1 min-w-0 space-y-1.5">
+                    {/* Row 1: Job Title + Company Badge */}
                     <div className="flex items-center gap-2.5 flex-wrap">
-                      <h2 className="text-lg font-bold text-white">{match.title}</h2>
+                      <h2 className="text-lg font-bold text-white leading-snug">
+                        {match.title}
+                      </h2>
                       <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-medium">
                         {match.company}
                       </span>
+                    </div>
+
+                    {/* Row 2: Source, Remote, <24h, Salary, and PDF Status Badges */}
+                    <div className="flex items-center gap-2 flex-wrap">
                       {(() => {
                         const srcBadge = formatJobSource(match.source);
                         return (
@@ -563,7 +570,9 @@ export function JobMatchFeed({
                         </span>
                       )}
                     </div>
-                    <p className="text-xs text-slate-400 mt-1">
+
+                    {/* Row 3: Location + Original Posting Link */}
+                    <p className="text-xs text-slate-400">
                       {match.location} &bull;{" "}
                       <a
                         href={match.url}
@@ -577,8 +586,8 @@ export function JobMatchFeed({
                   </div>
                 </div>
 
-                {/* Fit & Semantic Score Badges */}
-                <div className="flex items-center gap-3">
+                {/* Fit & Semantic Score Badges (Locked to Right) */}
+                <div className="flex items-center gap-3 shrink-0">
                   <div className="text-right">
                     <div className="text-xs text-slate-400">Fit Score</div>
                     <div className="text-xl font-extrabold text-emerald-400 font-mono">
