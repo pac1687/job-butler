@@ -322,3 +322,4 @@ function formatSkillName(raw: string): string {
   };
   return map[raw.toLowerCase()] || raw.charAt(0).toUpperCase() + raw.slice(1);
 }
+

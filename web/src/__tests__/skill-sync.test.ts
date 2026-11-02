@@ -64,3 +64,4 @@ describe("Skill Sync Utility (Option 1: Experience Bullets -> Skills Sync)", () 
     expect(claude?.suggestedCategory).toBe("ai_developer_tooling");
   });
 });
+
