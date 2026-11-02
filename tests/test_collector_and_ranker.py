@@ -172,5 +172,36 @@ def test_diversify_by_company_interleaves_across_sources() -> None:
     assert [j.source for j, _ in diversified] == ["indeed", "linkedin", "remotive", "indeed"]
 
 
+def test_filter_by_location_rejects_non_local_hybrid_and_onsite_roles() -> None:
+    chicago_false_remote = _make_job("Full Stack Developer", company="UST", url_suffix="1")
+    chicago_false_remote.location = "Chicago, IL, USA • Posted 2026-10-30"
+    chicago_false_remote.is_remote = True  # Even if flagged True by search query, specific city without "Remote" is rejected
+
+    hidden_hybrid = _make_job("Solutions Engineer", company="AcmeCorp", url_suffix="2")
+    hidden_hybrid.location = "United States (Remote) • Posted 2026-10-30"
+    hidden_hybrid.is_remote = True
+    hidden_hybrid.description_text = "This role is a hybrid position requiring 3 days per week in-office in Austin."
+
+    st_louis_onsite = _make_job("Software Engineer", company="MidwestCo", url_suffix="3")
+    st_louis_onsite.location = "St. Louis, MO"
+    st_louis_onsite.is_remote = False
+
+    kc_metro_hybrid = _make_job("Product Support Engineer", company="KCTech", url_suffix="4")
+    kc_metro_hybrid.location = "Overland Park, KS (Hybrid)"
+    kc_metro_hybrid.is_remote = False
+
+    true_us_remote = _make_job("AI Solutions Engineer", company="RemoteCo", url_suffix="5")
+    true_us_remote.location = "United States (Remote) • Posted 2026-10-31"
+    true_us_remote.is_remote = True
+
+    kept = filter_by_location(
+        [chicago_false_remote, hidden_hybrid, st_louis_onsite, kc_metro_hybrid, true_us_remote],
+        preferred_locations=["Lee's Summit, MO"],
+        allow_remote=True,
+    )
+    assert [j.company for j in kept] == ["KCTech", "RemoteCo"]
+
+
+
 
 

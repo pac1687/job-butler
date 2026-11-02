@@ -49,6 +49,98 @@ US_OR_GLOBAL_REMOTE_MARKERS = re.compile(
     r"(?i)\b(us|u\.s\.|usa|united states|north america|americas|anywhere|global|worldwide)\b"
 )
 
+HYBRID_OR_ONSITE_TITLE_LOC_MARKERS = re.compile(
+    r"(?i)\b(hybrid|on-site|onsite|in-office|in office)\b"
+)
+
+HYBRID_OR_ONSITE_DESC_MARKERS = re.compile(
+    r"(?i)("
+    r"\b(workplace\s*type|work\s*environment|work\s*arrangement|work\s*model|location\s*type)\s*[:\-]\s*(hybrid|on-site|onsite|in-office|in office)\b|"
+    r"\bthis\s+(role|position|job|opportunity)\s+is\s+(a\s+|an\s+)?(hybrid|on-site|onsite|in-office|in office)\b|"
+    r"\b(hybrid|on-site|onsite|in-office)\s+(role|position|schedule|work\s+environment|work\s+model)\b|"
+    r"\b\d+\s*(\+|to|-|–)?\s*\d*\s*days?\s+(per\s+week|a\s+week|/week|weekly)?\s*(in[- ]office|on[- ]site|in\s+the\s+office|in\s+our\s+[a-z\s]{1,25}office)\b|"
+    r"\bin[- ]office\s+\d+\s*(\+|to|-|–)?\s*\d*\s*days?\b|"
+    r"\bnot\s+a\s+remote\s+(role|position|job)\b|"
+    r"\bmust\s+(be\s+able\s+to\s+commute|work\s+on[- ]site|work\s+in[- ]office)\b"
+    r")"
+)
+
+EXPLICIT_FULL_REMOTE_DESC_MARKERS = re.compile(
+    r"(?i)\b(100%\s*remote|fully\s+remote|work\s+from\s+anywhere|remote[- ]first|remote\s+across\s+the\s+(us|u\.s\.|united\s+states))\b"
+)
+
+KC_METRO_CITIES = (
+    "kansas city",
+    "overland park",
+    "lee's summit",
+    "lees summit",
+    "olathe",
+    "lenexa",
+    "leawood",
+    "shawnee",
+    "independence",
+    "blue springs",
+    "liberty",
+    "raytown",
+    "grandview",
+    "belton",
+    "gladstone",
+    "north kansas city",
+    "mission, ks",
+    "prairie village",
+    "merriam",
+    "riverside, mo",
+    "parkville, mo",
+    "grain valley",
+    "harrisonville",
+)
+
+
+def is_local_market_match(
+    loc_text: str,
+    preferred_locations: Sequence[str],
+) -> bool:
+    """
+    Returns True if `loc_text` is within the user's configured local market (e.g. Lee's Summit /
+    50-mile Kansas City metro radius). Does NOT match an entire state like St. Louis, MO.
+    """
+    loc_lower = (loc_text or "").strip().lower()
+    if not loc_lower:
+        return False
+
+    cleaned_locs = [loc.strip() for loc in preferred_locations if loc and loc.strip()]
+    for target_loc in cleaned_locs:
+        target_lower = target_loc.lower()
+        if target_lower in loc_lower:
+            return True
+        parts = [p.strip() for p in target_loc.split(",") if p.strip()]
+        city_part = parts[0].lower() if parts else ""
+        if city_part and len(city_part) >= 3 and city_part in loc_lower:
+            return True
+        if any(kc in target_lower for kc in ("lee's summit", "lees summit", "kansas city", "overland park")):
+            if any(metro in loc_lower for metro in KC_METRO_CITIES):
+                return True
+
+    return False
+
+
+def has_hybrid_or_onsite_restriction(
+    title: str,
+    location: str,
+    description_text: str = "",
+) -> bool:
+    """
+    Returns True if the title, location, or job description indicates the role is Hybrid or On-Site
+    rather than 100% remote.
+    """
+    if HYBRID_OR_ONSITE_TITLE_LOC_MARKERS.search(title or ""):
+        return True
+    if HYBRID_OR_ONSITE_TITLE_LOC_MARKERS.search(location or ""):
+        return True
+    if description_text and HYBRID_OR_ONSITE_DESC_MARKERS.search(description_text):
+        return True
+    return False
+
 
 def is_eligible_remote_or_local(
     job: ScrapedJob,
@@ -56,57 +148,47 @@ def is_eligible_remote_or_local(
     allow_remote: bool = True,
 ) -> bool:
     """
-    Determines whether `job` matches either the user's local area keywords (`preferred_locations`)
-    or eligible Remote status (`allow_remote`), while filtering out foreign-only roles.
+    Determines whether `job` matches either the user's local area (`preferred_locations`)
+    or eligible 100% Remote status (`allow_remote`), while rejecting non-local hybrid/on-site roles
+    and foreign-only roles.
     """
     loc_text = (job.location or "").strip()
     loc_lower = loc_text.lower()
     title_lower = (job.title or "").lower()
+    desc_text = job.description_text or ""
 
     cleaned_locs = [loc.strip() for loc in preferred_locations if loc and loc.strip()]
 
-    # 1. Check explicit local area / metro / state match first
-    for target_loc in cleaned_locs:
-        target_lower = target_loc.lower()
-        if target_lower in loc_lower:
-            return True
-        parts = [p.strip() for p in target_loc.split(",") if p.strip()]
-        city_part = parts[0].lower() if parts else ""
-        state_part = parts[1].strip().split()[0].upper() if len(parts) > 1 else ""
-        if city_part and len(city_part) >= 3 and city_part in loc_lower:
-            return True
-        # Match state abbreviation (e.g., ", MO") and Kansas City bi-state metro cities when in Lee's Summit / KC
-        if state_part and len(state_part) == 2:
-            if re.search(rf",\s*{re.escape(state_part)}\b", loc_text, re.IGNORECASE):
-                return True
-        if any(kc in target_lower for kc in ("lee's summit", "lees summit", "kansas city", "overland park")):
-            if any(
-                metro in loc_lower
-                for metro in (
-                    "kansas city",
-                    "overland park",
-                    "lee's summit",
-                    "lees summit",
-                    "olathe",
-                    "lenexa",
-                    "leawood",
-                    "shawnee",
-                    "independence",
-                    "north kansas city",
-                    "mission, ks",
-                    "prairie village",
-                )
-            ):
-                return True
+    # 1. Check explicit local market match first (on-site, hybrid, and remote in local metro are all eligible)
+    if is_local_market_match(loc_text, cleaned_locs):
+        return True
 
-    # 2. Check remote eligibility
-    is_marked_remote = (
-        job.is_remote
-        or "remote" in loc_lower
+    # 2. Outside local market: reject any job that is explicitly Hybrid or On-site
+    if has_hybrid_or_onsite_restriction(job.title, loc_text, desc_text):
+        return False
+
+    # 3. Check remote eligibility
+    has_explicit_remote_label = (
+        "remote" in loc_lower
         or "anywhere" in loc_lower
         or "distributed" in loc_lower
         or "work from home" in loc_lower
         or "remote" in title_lower
+    )
+    # Strip "• Posted YYYY-MM-DD" suffix when inspecting raw location string
+    base_loc = loc_lower.split("•")[0].strip()
+    is_country_wide_loc = base_loc in {
+        "united states",
+        "usa",
+        "us",
+        "united states (remote)",
+        "remote",
+        "anywhere",
+    }
+
+    is_marked_remote = has_explicit_remote_label or (
+        job.is_remote
+        and (is_country_wide_loc or bool(EXPLICIT_FULL_REMOTE_DESC_MARKERS.search(desc_text)))
     )
 
     if allow_remote and is_marked_remote:

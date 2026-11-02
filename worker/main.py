@@ -19,7 +19,7 @@ from worker.config import WorkerConfig
 from worker.lease import LeaseCoordinator
 from worker.preflight import check_lm_studio_health, enforce_preflight_or_exit
 from worker.publisher import ArtifactPublisher
-from worker.ranker import SemanticRanker
+from worker.ranker import SemanticRanker, is_eligible_remote_or_local
 from worker.schemas import JobEvaluationResult, ScrapedJob
 from worker.synthesizer import JobSynthesizer
 from worker.typesetter import TypstTypesetter
@@ -378,7 +378,7 @@ def run_nightly_batch(config: WorkerConfig, max_jobs: Optional[int] = None) -> N
             top_by_src[j.source] = top_by_src.get(j.source, 0) + 1
 
         logger.info(
-            "Discovery batch scraped %d new jobs %s; %d passed location + semantic + diversity filter (>= %.2f, max %d/company). Scoring top %d matches %s (max_jobs=%d)...",
+            "Discovery batch scraped %d new jobs %s; %d passed location + semantic + diversity filter (>= %.2f, max %d/company). Scoring up to %d matches %s (max_jobs=%d)...",
             len(scraped),
             scraped_by_src,
             len(ranked),
@@ -388,14 +388,31 @@ def run_nightly_batch(config: WorkerConfig, max_jobs: Optional[int] = None) -> N
             top_by_src,
             effective_max_jobs,
         )
-        for idx, (job, sem_score) in enumerate(top_candidates, start=1):
+        scored_count = 0
+        target_total = min(effective_max_jobs, len(ranked))
+        for job, sem_score in ranked:
+            if scored_count >= effective_max_jobs:
+                break
             try:
                 if job.source == "linkedin":
                     job = collector.hydrate_linkedin_description(job)
+                    if not is_eligible_remote_or_local(
+                        job,
+                        preferred_locations=preferred_locations,
+                        allow_remote=allow_remote,
+                    ):
+                        logger.info(
+                            "Skipping LinkedIn job '%s' at '%s' (%s) after detail inspection: detected Hybrid/On-site outside local market.",
+                            job.title,
+                            job.company,
+                            job.location,
+                        )
+                        continue
+                scored_count += 1
                 logger.info(
                     "[Discovery %d/%d] Scoring '%s' at '%s' (%s, source=%s, semantic_score=%.2f)...",
-                    idx,
-                    len(top_candidates),
+                    scored_count,
+                    target_total,
                     job.title,
                     job.company,
                     job.location,
@@ -413,8 +430,8 @@ def run_nightly_batch(config: WorkerConfig, max_jobs: Optional[int] = None) -> N
             except Exception as job_exc:
                 logger.error(
                     "[Discovery %d/%d] Failed scoring/saving '%s' at '%s': %s",
-                    idx,
-                    len(top_candidates),
+                    scored_count,
+                    target_total,
                     job.title,
                     job.company,
                     job_exc,

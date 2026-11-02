@@ -12,6 +12,7 @@ from bs4 import BeautifulSoup
 import httpx
 
 from worker.cleaner import clean_job_description, compute_content_hash
+from worker.ranker import has_hybrid_or_onsite_restriction
 from worker.schemas import ScrapedJob
 
 logger = logging.getLogger(__name__)
@@ -317,11 +318,20 @@ class JobCollector:
                             loc_str = str(row.get("location") or "").strip()
                             if not loc_str or loc_str.lower() == "nan":
                                 loc_str = "Remote" if is_remote else location
+                            raw_remote_col = row.get("is_remote")
+                            explicit_row_remote = (
+                                raw_remote_col is True
+                                or str(raw_remote_col).strip().lower() == "true"
+                            )
                             row_remote = bool(
-                                row.get("is_remote")
-                                or is_remote
-                                or "remote" in loc_str.lower()
-                                or "remote" in title.lower()
+                                (
+                                    explicit_row_remote
+                                    or "remote" in loc_str.lower()
+                                    or "remote" in title.lower()
+                                )
+                                and not has_hybrid_or_onsite_restriction(
+                                    title, loc_str, cleaned
+                                )
                             )
                             if posted_iso:
                                 loc_str = f"{loc_str} • Posted {posted_iso}"
@@ -431,8 +441,13 @@ class JobCollector:
 
         for term in search_terms:
             self.sleep_fn(random.uniform(2.5, 4.2))
+            query_keywords = (
+                f"{term} Remote"
+                if (is_remote and "remote" not in term.lower())
+                else term
+            )
             params: Dict[str, str] = {
-                "keywords": term,
+                "keywords": query_keywords,
                 "location": location,
                 "f_TPR": f"r{tpr_seconds}",
                 "start": "0",
@@ -481,13 +496,29 @@ class JobCollector:
                         if not is_recent:
                             continue
 
-                        loc_str = (
+                        raw_loc = (
                             loc_el.get_text(strip=True)
                             if loc_el
                             else ("Remote" if is_remote else location)
                         )
-                        if is_remote and "remote" not in loc_str.lower():
-                            loc_str = f"{loc_str} (Remote)"
+                        raw_loc_lower = raw_loc.lower()
+                        # Only mark a Stage-1 LinkedIn card as remote if its location/title explicitly
+                        # says "Remote" or its location is nationwide ("United States") during an f_WT=2 query.
+                        # Never stamp a specific city/state card (e.g. "Chicago, IL") as Remote unless it says Remote.
+                        card_is_remote = bool(
+                            (
+                                "remote" in raw_loc_lower
+                                or "remote" in title.lower()
+                                or (
+                                    is_remote
+                                    and raw_loc_lower in {"united states", "usa", "us"}
+                                )
+                            )
+                            and not has_hybrid_or_onsite_restriction(title, raw_loc)
+                        )
+                        loc_str = raw_loc
+                        if card_is_remote and raw_loc_lower in {"united states", "usa", "us"}:
+                            loc_str = f"{raw_loc} (Remote)"
                         if posted_iso:
                             loc_str = f"{loc_str} • Posted {posted_iso}"
                         raw_href = str(link_el.get("href") or "").split("?")[0].strip() if link_el else ""
@@ -514,11 +545,7 @@ class JobCollector:
                                 title=title,
                                 company=company,
                                 location=loc_str,
-                                is_remote=bool(
-                                    is_remote
-                                    or "remote" in loc_str.lower()
-                                    or "remote" in title.lower()
-                                ),
+                                is_remote=card_is_remote,
                                 url=raw_href,
                                 content_hash=content_hash,
                                 description_text=placeholder_desc,
@@ -575,8 +602,16 @@ class JobCollector:
                 )
                 raw_html = str(desc_div) if desc_div else resp.text
                 cleaned = clean_job_description(raw_html)
+                full_page_text = soup.get_text(" ", strip=True)
                 if cleaned and len(cleaned) > 100:
-                    return job.model_copy(update={"description_text": cleaned})
+                    updates: Dict[str, Any] = {"description_text": cleaned}
+                    # Verify on the Stage-2 detail page that the listing isn't actually Hybrid or On-site
+                    if has_hybrid_or_onsite_restriction(
+                        job.title, job.location, f"{cleaned}\n{full_page_text}"
+                    ):
+                        updates["is_remote"] = False
+                        updates["location"] = job.location.replace(" (Remote)", " (Hybrid/On-site)")
+                    return job.model_copy(update=updates)
                 break
             except Exception as exc:
                 logger.warning(
