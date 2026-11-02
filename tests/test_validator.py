@@ -235,6 +235,18 @@ def test_merge_two_bullets_combines_primary_and_secondary_coherently() -> None:
     assert merged.endswith(".")
 
 
+def test_merge_two_bullets_strips_leading_header_from_second_bullet() -> None:
+    from worker.validator import merge_two_bullets
+
+    b1 = "Webhooks & Third-Party API Integration: Developed real-time webhooks for email event streams (CoffeeScript, Node)."
+    b2 = "Tooling & Automation: Implemented template cloning and automated HTML-to-PDF/PNG export tools (Angular 1.x, Node, Bootstrap)."
+
+    merged = merge_two_bullets(b1, b2)
+    assert "Tooling & Automation:" not in merged
+    assert "while tooling" not in merged
+    assert "while implementing template cloning" in merged
+
+
 def test_validator_validate_combined_bullet_accepts_valid_and_catches_forbidden() -> None:
     validator = GuardrailValidator(embed_fn=_high_sim_embed)
     b1 = "Delivered remote hardware and software technical support to field insurance agents and trained staff on proprietary rating systems."

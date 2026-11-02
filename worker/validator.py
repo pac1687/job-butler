@@ -241,6 +241,7 @@ def merge_two_bullets(b1: str, b2: str) -> str:
     """
     Deterministically combines two bullet points into a single coherent sentence,
     preserving the primary duty (first bullet) while integrating the secondary project (second bullet).
+    Safely strips any leading topic header from the second bullet so it doesn't get embedded mid-sentence.
     """
     clean1 = (b1 or "").strip().rstrip(".")
     clean2 = (b2 or "").strip().rstrip(".")
@@ -249,7 +250,16 @@ def merge_two_bullets(b1: str, b2: str) -> str:
     if not clean2:
         return f"{clean1}."
 
+    # Strip any leading topic header from b2 so it doesn't get embedded mid-sentence
+    # (e.g. 'Tooling & Automation: Implemented...' -> 'Implemented...')
+    header_match2 = LEADING_HEADER_REGEX.match(clean2)
+    if header_match2:
+        clean2 = clean2[header_match2.end():].strip()
+
     words2 = clean2.split()
+    if not words2:
+        return f"{clean1}."
+
     first_word = words2[0]
     first_lower = first_word.lower()
 
@@ -278,6 +288,7 @@ def merge_two_bullets(b1: str, b2: str) -> str:
             "deployed": "deploying",
             "established": "establishing",
             "integrated": "integrating",
+            "authored": "authoring",
         }
         if first_lower in verb_map:
             participle = verb_map[first_lower]

@@ -574,6 +574,8 @@ class JobSynthesizer:
             return valid_bullets[0]
 
         b1, b2 = valid_bullets[0], valid_bullets[1]
+        header_match2 = LEADING_HEADER_REGEX.match(b2)
+        clean_b2 = b2[header_match2.end():].strip() if header_match2 else b2
 
         system_prompt = (
             "You are an expert executive resume editor. Combine the candidate's two accomplishments "
@@ -581,9 +583,11 @@ class JobSynthesizer:
             "CRITICAL RULES: "
             "1. Coherently merge both accomplishments so that the primary role function (from the first accomplishment) "
             "remains clear and prominent while integrating the technical capabilities from the second accomplishment. "
-            "2. Keep all numbers, metrics, and named technologies verbatim (e.g., PGP, BestCrypt, rating systems). Do not invent tools or metrics. "
-            "3. The output MUST be a single grammatically complete sentence ending with a period (between 120 and 220 characters). "
-            f"4. NEVER include any of these forbidden terms: {list(forbidden_terms)}. "
+            "2. NEVER include a second topic header (such as 'Tooling & Automation:') in the body of the bullet. "
+            "If the primary accomplishment begins with a header prefix (e.g. 'Project:'), preserve only that leading header. "
+            "3. Keep all numbers, metrics, and named technologies verbatim (e.g., PGP, BestCrypt, rating systems). Do not invent tools or metrics. "
+            "4. The output MUST be a single grammatically complete sentence ending with a period (between 120 and 220 characters). "
+            f"5. NEVER include any of these forbidden terms: {list(forbidden_terms)}. "
             'Return ONLY JSON: {"bullet": "..."}'
         )
         user_prompt = json.dumps(
@@ -592,7 +596,7 @@ class JobSynthesizer:
                 "company": company,
                 "target_job_title": job_title,
                 "primary_accomplishment": b1,
-                "secondary_accomplishment": b2,
+                "secondary_accomplishment": clean_b2,
             }
         )
         try:
@@ -751,6 +755,7 @@ class JobSynthesizer:
                 "location": role.get("location", "Remote"),
                 "dates": role.get("dates", ""),
                 "bullets": final_bullets,
+                "source_bullet_count": len(source_bullets),
             }
             if combined_bullet:
                 role_entry["combined_bullet"] = combined_bullet
