@@ -135,6 +135,59 @@ def extract_searchable_skill_pool(master_profile: Dict[str, Any]) -> List[str]:
     return pool
 
 
+def filter_and_validate_matched_skills(
+    raw_skills: Sequence[str],
+    job_description: str,
+    job_title: str = "",
+    max_skills: int = 8,
+) -> List[str]:
+    """
+    Ensures matched_skills contains only verified candidate technologies that are
+    explicitly mentioned or required in the job description or job title.
+    Filters out noise tokens, company names, and English stopwords, and caps
+    at `max_skills`.
+    """
+    desc_clean = f"{job_title} {job_description}".lower()
+    stopwords = {
+        "and", "with", "using", "the", "for", "on", "in", "to", "at", "by",
+        "is", "it", "an", "as", "or", "be", "of", "from", "that", "this",
+        "our", "you", "your", "are", "we", "full", "stack", "software",
+        "engineer", "engineering", "developer", "development", "lead", "senior"
+    }
+    disallowed_noise = {
+        "user", "preferences", "softvu", "spas", "ui", "uis", "db-backed",
+        "catalogs", "including ai tools and workflows - aws kiro", "lifecycle/ttl",
+        "candidate", "company", "applicant", "job", "experience", "role",
+        "work", "tools", "systems", "platform"
+    }
+
+    filtered: List[str] = []
+    seen: set[str] = set()
+
+    for s in raw_skills:
+        clean = (s or "").strip()
+        clean_lower = clean.lower()
+        if not clean or len(clean) < 2 or clean_lower in disallowed_noise or clean_lower in seen:
+            continue
+
+        # Avoid redundant duplicate concepts (e.g. 'AWS' if 'AWS (Lambda...)' already added, or 'Claude' if 'Claude (Anthropic)' added)
+        if any(clean_lower == f.lower() or (len(clean_lower) <= 5 and clean_lower in f.lower()) or (len(f) <= 5 and f.lower() in clean_lower) for f in filtered):
+            continue
+
+        tokens = [t.lower() for t in re.findall(r"[A-Za-z0-9.+]+", clean) if len(t) >= 2]
+        matched = any(
+            token not in stopwords and re.search(r"(?<!\w)" + re.escape(token) + r"(?!\w)", desc_clean)
+            for token in tokens
+        )
+        if matched:
+            seen.add(clean_lower)
+            filtered.append(clean)
+            if len(filtered) >= max_skills:
+                break
+
+    return filtered
+
+
 class SingleBulletResponse(BaseModel):
     bullet: str = Field(...)
 
@@ -243,13 +296,16 @@ class JobSynthesizer:
         Generates structural evaluation: fit_score (1-10), matched_skills, missing_skills,
         and a concise 2-sentence fit_rationale.
         """
-        searchable_pool = extract_searchable_skill_pool(master_profile)
         system_prompt = (
             "You are a precise technical career evaluator. Return ONLY valid JSON matching "
             "keys: fit_score (float 1.0-10.0), matched_skills (list of strings), "
             "missing_skills (list of strings), fit_rationale (2 concise sentences), "
-            "extracted_salary (normalized pay range string like '$130,000 - $160,000/yr' or '$65 - $85/hr' if stated in job_description, or null if not mentioned). "
-            "NOTE: matched_skills should identify overlapping technologies from both candidate_skills and all_verified_technologies across their experience bullets."
+            "extracted_salary (normalized pay range string like '$130,000 - $160,000/yr' or '$65 - $85/hr' if stated in job_description, or null if not mentioned).\n"
+            "CRITICAL RULES FOR matched_skills:\n"
+            "1. ONLY include technologies, languages, frameworks, or tools that are EXPLICITLY REQUIRED or MENTIONED in the job_description and possessed by the candidate.\n"
+            "2. Return at most 5 to 8 of the most critical matching technical skills.\n"
+            "3. NEVER return the candidate's entire skillset. If a skill is not requested in the job description, do NOT include it.\n"
+            "4. Do NOT include company names, generic words ('User', 'Preferences', 'SoftVu'), or sentence fragments."
         )
         user_prompt = json.dumps(
             {
@@ -257,7 +313,6 @@ class JobSynthesizer:
                 "company": job.company,
                 "job_description": job.description_text[:4500],
                 "candidate_skills": master_profile.get("skills", {}),
-                "all_verified_technologies": searchable_pool,
                 "candidate_experience": master_profile.get("experience", []),
                 "steering_notes": natural_language_notes,
             }
@@ -268,6 +323,10 @@ class JobSynthesizer:
                 user_prompt,
                 max_tokens=3072,
                 schema_model=JobEvaluationResult,
+            )
+            raw_matched = data.get("matched_skills") or []
+            data["matched_skills"] = filter_and_validate_matched_skills(
+                raw_matched, job.description_text, job.title, max_skills=8
             )
             return JobEvaluationResult.model_validate(data)
         except Exception as exc:

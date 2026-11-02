@@ -11,6 +11,7 @@ from worker.synthesizer import (
     apply_full_stack_style,
     detect_full_stack_style,
     extract_searchable_skill_pool,
+    filter_and_validate_matched_skills,
     normalize_full_stack_hyphenation,
 )
 
@@ -534,6 +535,56 @@ def test_generate_artifact_filenames_standardized_format() -> None:
     )
     assert resume_def == "Candidate - Job Title - Company.pdf"
     assert cover_def == "Candidate - Company - Cover Letter.pdf"
+
+
+def test_filter_and_validate_matched_skills_rejects_unrequested_and_noise() -> None:
+    job_desc = (
+        "We are looking for a Product Engineer with experience in TypeScript, AWS, CI/CD, and AI-assisted workflows. "
+        "Familiarity with relational databases is preferred."
+    )
+    raw_skills = [
+        "AWS (Lambda, S3, SSM, SNS/SQS)",
+        "TypeScript",
+        "CI/CD",
+        "AI Developer Workflows",
+        "Perl",  # Not in job
+        "CoffeeScript",  # Not in job
+        "Apex",  # Not in job
+        "User",  # Noise word
+        "Preferences",  # Noise word
+        "SoftVu",  # Company name
+        "DB-backed",  # Noise word
+        "Ruby on Rails",  # Not in job
+    ]
+
+    filtered = filter_and_validate_matched_skills(
+        raw_skills=raw_skills,
+        job_description=job_desc,
+        job_title="Product Engineer",
+        max_skills=8,
+    )
+
+    # Valid matches present
+    assert "TypeScript" in filtered
+    assert "AWS (Lambda, S3, SSM, SNS/SQS)" in filtered
+    assert "CI/CD" in filtered
+    assert "AI Developer Workflows" in filtered
+
+    # Irrelevant or unrequested technologies excluded
+    assert "Perl" not in filtered
+    assert "CoffeeScript" not in filtered
+    assert "Apex" not in filtered
+    assert "Ruby on Rails" not in filtered
+
+    # Noise tokens and company names excluded
+    assert "User" not in filtered
+    assert "Preferences" not in filtered
+    assert "SoftVu" not in filtered
+    assert "DB-backed" not in filtered
+
+    # Capped at max_skills
+    assert len(filtered) <= 8
+
 
 
 
