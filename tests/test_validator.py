@@ -6,7 +6,10 @@ from typing import List
 from worker.validator import (
     GuardrailValidator,
     contains_forbidden_term,
+    extract_named_entities_and_terms,
     extract_numeric_tokens,
+    verify_complete_bullet,
+    verify_context_and_entities_preserved,
     verify_numeric_tokens_unchanged,
 )
 
@@ -36,6 +39,12 @@ def test_numerical_entity_mutation_rejection() -> None:
     assert ok is False
     assert reason is not None
     assert "35%" in reason
+
+    # Dropped number ('3')
+    dropped_num = "Reduced p95 API latency by 20% across regional clusters."
+    ok_drop, reason_drop = verify_numeric_tokens_unchanged(source, dropped_num)
+    assert ok_drop is False
+    assert "3" in (reason_drop or "")
 
     # Preserved metrics
     valid = "Cut p95 API latency by 20% across 3 regional clusters."
@@ -122,13 +131,93 @@ def test_validator_accepts_valid_rephrased_bullet_and_verbatim_mode() -> None:
     assert verbatim_outcome.passed is True
 
 
+def test_validator_rejects_incomplete_or_cutoff_bullets() -> None:
+    validator = GuardrailValidator(embed_fn=_high_sim_embed)
+    source = (
+        "Core Reliability & Systems Architecture: Maintained and supported 13 core repositories "
+        "across microservices and React SPAs; investigated and resolved production hotfixes, "
+        "authored shared TypeScript data contracts and UI component libraries, and integrated "
+        "developer tooling (including AI tools and workflows - AWS Kiro using Claude models) "
+        "to sustain platform reliability."
+    )
+    cutoff = (
+        "Maintained 13 core repositories across microservices and React SPAs; authored shared "
+        "TypeScript data contracts and UI component libraries; integrated AWS Kiro using"
+    )
+    outcome = validator.validate_bullet(source_bullet=source, generated_bullet=cutoff)
+    assert outcome.passed is False
+    assert outcome.used_fallback is True
+    assert outcome.final_bullet == source
+
+    # Dangling preposition even if a period was appended
+    dangling_with_period = (
+        "Maintained 13 core repositories across microservices and integrated AWS Kiro using."
+    )
+    ok, reason = verify_complete_bullet(source, dangling_with_period)
+    assert ok is False
+    assert "using" in (reason or "")
+
+    # Unbalanced parenthesis
+    unbalanced = "Maintained 13 core repositories (including AI tools and AWS Kiro."
+    ok2, reason2 = verify_complete_bullet(source, unbalanced)
+    assert ok2 is False
+    assert "parentheses" in (reason2 or "")
+
+
+def test_validator_preserves_leading_topic_header_and_named_entities() -> None:
+    validator = GuardrailValidator(embed_fn=_high_sim_embed)
+    source = (
+        "Feeds 2.0 Modernization & Data Workflows: Engineered full-stack rebuild across 5+ repositories, "
+        "delivering end-to-end capabilities from NestJS APIs and PostgreSQL migrations to React UIs; "
+        "built multi-format ingestion (JSON/XML), deduplication, and notification lifecycle/TTL controls."
+    )
+    missing_header = (
+        "Engineered a full-stack rebuild across 5+ repositories, delivering end-to-end capabilities "
+        "from NestJS APIs and PostgreSQL migrations to React UIs, while building multi-format ingestion "
+        "(JSON/XML), deduplication, and notification lifecycle/TTL controls."
+    )
+    outcome = validator.validate_bullet(
+        source_bullet=source,
+        generated_bullet=missing_header,
+    )
+    assert outcome.passed is False
+    assert outcome.used_fallback is True
+    assert outcome.final_bullet == source
+
+    # Valid rewrite that preserves header, numbers, and named entities
+    valid_with_header = (
+        "Feeds 2.0 Modernization & Data Workflows: Engineered a full-stack rebuild across 5+ repositories, "
+        "delivering end-to-end capabilities from NestJS APIs and PostgreSQL migrations to React UIs, "
+        "and built multi-format ingestion (JSON/XML), deduplication, and notification lifecycle/TTL controls."
+    )
+    outcome_ok = validator.validate_bullet(
+        source_bullet=source,
+        generated_bullet=valid_with_header,
+    )
+    assert outcome_ok.passed is True
+    assert outcome_ok.final_bullet == valid_with_header
+
+    # Dropping a named tool like 'Claude' from source bullet is rejected
+    claude_source = (
+        "Core Reliability & Systems Architecture: Maintained 13 core repositories across React SPAs "
+        "and integrated AWS Kiro using Claude models to sustain platform reliability."
+    )
+    dropped_claude = (
+        "Core Reliability & Systems Architecture: Maintained 13 core repositories across React SPAs "
+        "and integrated AWS Kiro using AI models to sustain platform reliability."
+    )
+    ok_ent, ent_reason = verify_context_and_entities_preserved(claude_source, dropped_claude)
+    assert ok_ent is False
+    assert "Claude" in (ent_reason or "")
+    assert "Claude" in extract_named_entities_and_terms(claude_source)
+
+
 def test_validator_rejects_bullet_exceeding_170_chars() -> None:
     validator = GuardrailValidator(embed_fn=_high_sim_embed)
     source = "Short verified source bullet."
-    too_long = "A" * 175
+    too_long = ("A" * 174) + "."
     outcome = validator.validate_bullet(source_bullet=source, generated_bullet=too_long)
     assert outcome.passed is False
     assert outcome.used_fallback is True
     assert outcome.final_bullet == source
     assert extract_numeric_tokens("25% and 42.5") == {"25%", "42.5"}
-

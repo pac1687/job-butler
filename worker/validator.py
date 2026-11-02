@@ -14,6 +14,95 @@ logger = logging.getLogger(__name__)
 # Numerical token extractor per SPEC.md Section 3.4: captures numbers and optional trailing %
 NUMERIC_TOKEN_REGEX = re.compile(r"\b\d+(?:\.\d+)?(?:%|\b)")
 
+# Leading topic/project header prefix before a colon, e.g. "Feeds 2.0 Modernization & Data Workflows: ..."
+LEADING_HEADER_REGEX = re.compile(r"^([A-Z][^:;\n]{2,65}):\s+")
+
+# Words that must never appear as the final word of a resume bullet
+DANGLING_TERMINAL_WORDS: Set[str] = {
+    "a",
+    "across",
+    "after",
+    "against",
+    "along",
+    "amid",
+    "among",
+    "an",
+    "and",
+    "around",
+    "as",
+    "at",
+    "before",
+    "behind",
+    "below",
+    "beneath",
+    "beside",
+    "between",
+    "beyond",
+    "both",
+    "but",
+    "by",
+    "despite",
+    "down",
+    "during",
+    "either",
+    "except",
+    "for",
+    "from",
+    "if",
+    "in",
+    "including",
+    "inside",
+    "into",
+    "its",
+    "like",
+    "near",
+    "neither",
+    "nor",
+    "of",
+    "off",
+    "on",
+    "onto",
+    "or",
+    "our",
+    "over",
+    "per",
+    "plus",
+    "since",
+    "so",
+    "such",
+    "than",
+    "that",
+    "the",
+    "their",
+    "through",
+    "throughout",
+    "to",
+    "toward",
+    "towards",
+    "under",
+    "underneath",
+    "unless",
+    "unlike",
+    "until",
+    "up",
+    "upon",
+    "using",
+    "via",
+    "when",
+    "where",
+    "whereas",
+    "whether",
+    "which",
+    "while",
+    "who",
+    "whom",
+    "whose",
+    "with",
+    "within",
+    "without",
+    "yet",
+}
+
 
 @dataclass(frozen=True)
 class BulletValidationOutcome:
@@ -54,8 +143,16 @@ def verify_numeric_tokens_unchanged(
     """
     Ensures:
     1. No numeric token appears in `generated_bullet` that did not exist in `source_bullet`.
-    2. Any `protected_metrics` present in `source_bullet` are preserved intact in `generated_bullet`.
+    2. No numeric token from `source_bullet` (including version numbers like '2.0' or counts like '5') is dropped.
+    3. Any `protected_metrics` present in `source_bullet` are preserved intact in `generated_bullet`.
     """
+    for metric in protected_metrics:
+        if metric and metric in source_bullet and metric not in generated_bullet:
+            return (
+                False,
+                f"Protected metric '{metric}' was dropped or altered",
+            )
+
     source_tokens = extract_numeric_tokens(source_bullet)
     generated_tokens = extract_numeric_tokens(generated_bullet)
 
@@ -66,12 +163,108 @@ def verify_numeric_tokens_unchanged(
             f"Fabricated or mutated numeric metric(s): {sorted(fabricated)}",
         )
 
-    for metric in protected_metrics:
-        if metric and metric in source_bullet and metric not in generated_bullet:
+    dropped = source_tokens - generated_tokens
+    if dropped:
+        return (
+            False,
+            f"Dropped numeric token(s) from source bullet: {sorted(dropped)}",
+        )
+
+    return True, None
+
+
+def extract_named_entities_and_terms(bullet: str) -> List[str]:
+    """
+    Extracts technical identifiers, acronyms, and mid-sentence proper nouns from `bullet`
+    (e.g., 'Claude', 'Kiro', 'AWS', 'NestJS', 'PostgreSQL', 'TypeScript', 'React', 'JSON', 'XML', 'TTL').
+    """
+    body = LEADING_HEADER_REGEX.sub("", (bullet or "").strip())
+    tokens: List[str] = []
+    seen: Set[str] = set()
+
+    # Split into clauses on sentence/clause boundaries so we can distinguish clause-initial words
+    clauses = re.split(r"(?:^|[.;!?]\s+)", body)
+    for clause in clauses:
+        words = re.findall(r"\b[A-Za-z][A-Za-z0-9.+/-]*\b", clause.strip())
+        for idx, raw_word in enumerate(words):
+            word = raw_word.rstrip(".,;:!?/+-")
+            if len(word) < 2:
+                continue
+            is_acronym = word.isupper() and len(word) >= 2
+            is_mixed_case = any(c.isupper() for c in word[1:]) and any(c.islower() for c in word)
+            is_mid_clause_proper = idx > 0 and word[0].isupper() and word[1:].islower()
+
+            if is_acronym or is_mixed_case or is_mid_clause_proper:
+                low = word.lower()
+                if low not in seen:
+                    seen.add(low)
+                    tokens.append(word)
+    return tokens
+
+
+def verify_context_and_entities_preserved(
+    source_bullet: str,
+    generated_bullet: str,
+) -> Tuple[bool, Optional[str]]:
+    """
+    Ensures that:
+    1. If `source_bullet` starts with a `<Topic / Project Header>:` prefix (e.g.,
+       'Feeds 2.0 Modernization & Data Workflows:'), that prefix context is preserved.
+    2. Named tools, platforms, acronyms, and proper nouns in `source_bullet`
+       (e.g., Claude, AWS, Kiro, NestJS, PostgreSQL, React, JSON, XML, TTL) are not dropped.
+    """
+    src = (source_bullet or "").strip()
+    gen = (generated_bullet or "").strip()
+
+    header_match = LEADING_HEADER_REGEX.match(src)
+    if header_match:
+        expected_header = header_match.group(1).strip()
+        if not gen.lower().startswith(expected_header.lower() + ":"):
             return (
                 False,
-                f"Protected metric '{metric}' was dropped or altered",
+                f"Dropped leading topic/project context header '{expected_header}:'",
             )
+
+    required_entities = extract_named_entities_and_terms(src)
+    for entity in required_entities:
+        pattern = re.compile(r"(?i)(?<!\w)" + re.escape(entity) + r"(?!\w)")
+        if not pattern.search(gen):
+            return (
+                False,
+                f"Dropped named tool/entity '{entity}' from source bullet",
+            )
+
+    return True, None
+
+
+def verify_complete_bullet(
+    source_bullet: str,
+    generated_bullet: str,
+) -> Tuple[bool, Optional[str]]:
+    """
+    Ensures `generated_bullet` is a complete, grammatically terminated bullet and not
+    cut off mid-sentence (e.g., ending with 'using', trailing punctuation, or unclosed parens).
+    """
+    candidate = (generated_bullet or "").strip()
+    if not candidate:
+        return False, "Empty bullet"
+
+    if candidate.count("(") != candidate.count(")") or candidate.count("[") != candidate.count("]"):
+        return False, "Unbalanced parentheses or brackets"
+
+    if candidate.endswith((",", ";", ":", "-", "–", "—", "/", "(", "[")) or candidate.endswith("..."):
+        return False, f"Incomplete trailing punctuation in '{candidate[-10:]}'"
+
+    if source_bullet.strip().endswith(".") and not candidate.endswith("."):
+        return False, "Missing terminal period (truncated sentence)"
+
+    words = re.findall(r"[A-Za-z]+", candidate)
+    if not words:
+        return False, "Bullet contains no alphabetic words"
+
+    last_word = words[-1].lower()
+    if last_word in DANGLING_TERMINAL_WORDS:
+        return False, f"Bullet ends on dangling word '{words[-1]}'"
 
     return True, None
 
@@ -79,10 +272,12 @@ def verify_numeric_tokens_unchanged(
 class GuardrailValidator:
     """
     Audits LLM-tailored bullets before Typst compilation:
+    0. Completeness check rejecting cut-off/truncated sentences or dangling terminal words.
     1. Denylist scanner rejecting bullets containing forbidden_terms.
-    2. Numerical entity verification ensuring no new/mutated metric tokens exist.
-    3. Semantic drift check ensuring cosine similarity to source bullet >= 0.82.
-    4. Automatic fallback to original verbatim source text if any check fails.
+    2. Numerical entity verification ensuring no new/mutated/dropped metric tokens exist.
+    3. Context & named-entity preservation (topic headers like 'Feeds 2.0...:' and tools like 'Claude').
+    4. Semantic drift check ensuring cosine similarity to source bullet >= 0.82.
+    5. Automatic fallback to original verbatim source text if any check fails.
     """
 
     def __init__(
@@ -144,6 +339,21 @@ class GuardrailValidator:
                 similarity_score=0.0,
             )
 
+        # 0. Completeness / anti-truncation check
+        complete_ok, incomplete_reason = verify_complete_bullet(source_bullet, candidate)
+        if not complete_ok:
+            logger.warning(
+                "Guardrail rejected incomplete/cutoff bullet (%s); reverting to verbatim source.",
+                incomplete_reason,
+            )
+            return BulletValidationOutcome(
+                final_bullet=source_bullet,
+                passed=False,
+                used_fallback=True,
+                failure_reason=incomplete_reason,
+                similarity_score=0.0,
+            )
+
         allowed_len = max(self.max_bullet_chars, len(source_bullet.strip()) + 25)
         if len(candidate) > allowed_len:
             logger.warning(
@@ -193,7 +403,25 @@ class GuardrailValidator:
                 similarity_score=0.0,
             )
 
-        # 3. Semantic cosine similarity drift check (>= 0.82)
+        # 3. Context header & named-entity preservation check
+        context_ok, context_error = verify_context_and_entities_preserved(
+            source_bullet=source_bullet,
+            generated_bullet=candidate,
+        )
+        if not context_ok:
+            logger.warning(
+                "Guardrail rejected bullet due to lost context/entity (%s); reverting to source.",
+                context_error,
+            )
+            return BulletValidationOutcome(
+                final_bullet=source_bullet,
+                passed=False,
+                used_fallback=True,
+                failure_reason=context_error,
+                similarity_score=0.0,
+            )
+
+        # 4. Semantic cosine similarity drift check (>= 0.82)
         sim = self._compute_similarity(source_bullet, candidate)
         if sim < self.similarity_threshold:
             logger.warning(
