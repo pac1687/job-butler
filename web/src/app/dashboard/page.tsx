@@ -210,7 +210,7 @@ export default async function DashboardPage() {
               Job Triage &amp; Audit Dashboard
             </h1>
             <p className="text-sm text-slate-400">
-              Ranked by local LLM fit_score descending. Inspect payload snapshots or generate 15-minute presigned R2 PDF links.
+              Ranked by local LLM fit_score descending. Triage discovered matches, batch-compile 1-page Typst PDFs, or inspect guardrail snapshots.
             </p>
           </div>
         </div>

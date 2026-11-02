@@ -14,7 +14,7 @@ export default function PublicDemoPage() {
             </h1>
             <p className="text-xs text-amber-300/80 mt-0.5">
               Showing sanitized mock job matches, guardrail snapshots, and fit rationales.
-              Sign in with the allowlisted administrator Google account to manage live jobs and R2 PDFs.
+              Sign in with the allowlisted administrator Google account to manage live jobs and tailored PDFs.
             </p>
           </div>
           <span className="text-xs font-mono px-2.5 py-1 rounded bg-amber-900/60 text-amber-200">

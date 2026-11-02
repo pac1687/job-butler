@@ -117,6 +117,7 @@ export function JobMatchFeed({
   const [discoveryNotice, setDiscoveryNotice] = useState<string | null>(null);
   const [runningDiscovery, setRunningDiscovery] = useState(false);
   const [selectedJobIds, setSelectedJobIds] = useState<string[]>([]);
+  const [collapsedMatchIds, setCollapsedMatchIds] = useState<string[]>([]);
   const [queuedTailorJobIds, setQueuedTailorJobIds] = useState<string[]>([]);
   const [tailoringBatch, setTailoringBatch] = useState(false);
   const [deletingMatches, setDeletingMatches] = useState(false);
@@ -232,6 +233,37 @@ export function JobMatchFeed({
     }
   }
 
+  function toggleCollapseMatch(matchId: string) {
+    setCollapsedMatchIds((prev) =>
+      prev.includes(matchId)
+        ? prev.filter((id) => id !== matchId)
+        : [...prev, matchId]
+    );
+  }
+
+  function handleToggleCollapseVisible() {
+    const targetIds =
+      selectedJobIds.length > 0
+        ? filteredMatches
+            .filter((m) => selectedJobIds.includes(m.job_id))
+            .map((m) => m.id)
+        : filteredMatches.map((m) => m.id);
+    if (targetIds.length === 0) return;
+
+    const allTargetCollapsed = targetIds.every((id) =>
+      collapsedMatchIds.includes(id)
+    );
+    if (allTargetCollapsed) {
+      setCollapsedMatchIds((prev) =>
+        prev.filter((id) => !targetIds.includes(id))
+      );
+    } else {
+      setCollapsedMatchIds((prev) =>
+        Array.from(new Set([...prev, ...targetIds]))
+      );
+    }
+  }
+
   async function handleDeleteMatches(targetMatches: EvaluatedJobMatch[]) {
     if (readOnly || targetMatches.length === 0) return;
     const matchIds = targetMatches.map((m) => m.id);
@@ -283,53 +315,24 @@ export function JobMatchFeed({
     }
   }
 
+  const collapseTargetIds =
+    selectedJobIds.length > 0
+      ? filteredMatches
+          .filter((m) => selectedJobIds.includes(m.job_id))
+          .map((m) => m.id)
+      : filteredMatches.map((m) => m.id);
+  const areTargetCardsCollapsed =
+    collapseTargetIds.length > 0 &&
+    collapseTargetIds.every((id) => collapsedMatchIds.includes(id));
+
   return (
     <div className="space-y-4">
-      {/* Bulk & Queue Actions Bar */}
+      {/* 1. Dedicated Discovery & URL Ingestion Bar (Anchored separately so buttons never shift) */}
       {!readOnly && (
-        <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-900/70 border border-slate-800 rounded-xl p-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={handleSelectAllUntailored}
-              disabled={filteredMatches.length === 0}
-              className="px-3 py-2 rounded-lg text-xs font-semibold bg-slate-800 text-slate-200 hover:bg-slate-700 border border-slate-700 disabled:opacity-40 disabled:pointer-events-none transition"
-            >
-              {filteredMatches.length > 0 &&
-              filteredMatches.every((m) => selectedJobIds.includes(m.job_id))
-                ? "Clear Selection"
-                : "Select All Visible"}
-            </button>
-            {selectedJobIds.length > 0 && (
-              <>
-                <button
-                  type="button"
-                  onClick={() => handleTailorJobs(selectedJobIds)}
-                  disabled={tailoringBatch || deletingMatches}
-                  className="px-3.5 py-2 rounded-lg text-xs font-semibold bg-amber-500 text-slate-950 hover:bg-amber-400 disabled:opacity-50 transition"
-                >
-                  {tailoringBatch
-                    ? "Queuing PDFs..."
-                    : `✨ Generate PDFs for Selected (${selectedJobIds.length})`}
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    handleDeleteMatches(
-                      matches.filter((m) => selectedJobIds.includes(m.job_id))
-                    )
-                  }
-                  disabled={deletingMatches || tailoringBatch}
-                  className="px-3 py-2 rounded-lg text-xs font-semibold bg-rose-950/90 text-rose-200 hover:bg-rose-900 border border-rose-800 disabled:opacity-50 transition"
-                >
-                  {deletingMatches
-                    ? "Deleting..."
-                    : `🗑️ Delete Selected (${selectedJobIds.length})`}
-                </button>
-              </>
-            )}
-          </div>
-
+        <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-900/70 border border-slate-800 rounded-xl px-4 py-3">
+          <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+            Job Discovery &amp; Queue
+          </span>
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex items-center bg-slate-950 border border-slate-700 rounded-lg overflow-hidden">
               <label
@@ -387,46 +390,109 @@ export function JobMatchFeed({
         </div>
       )}
 
-      {/* Stage Filter Tabs (below bulk actions, directly above job listing cards) */}
-      <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={() => setActiveFilter("ALL")}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
-              activeFilter === "ALL"
-                ? "bg-emerald-500 text-slate-950"
-                : "bg-slate-800 text-slate-300 hover:bg-slate-700"
-            }`}
-          >
-            ALL
-          </button>
-          <button
-            onClick={() => setActiveFilter("NEW_24H")}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
-              activeFilter === "NEW_24H"
-                ? "bg-amber-400 text-slate-950"
-                : "bg-amber-950/70 text-amber-300 border border-amber-800/70 hover:bg-amber-900/70"
-            }`}
-          >
-            🔥 NEW (&lt; 24H) ({fresh24hCount})
-          </button>
-          {STATUS_OPTIONS.map((status) => (
+      {/* 2. Stage Filter Tabs & Batch Selection / Collapse Controls */}
+      <div className="bg-slate-900/50 border border-slate-800/90 rounded-xl p-3.5 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2">
             <button
-              key={status}
-              onClick={() => setActiveFilter(status)}
+              onClick={() => setActiveFilter("ALL")}
               className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
-                activeFilter === status
+                activeFilter === "ALL"
                   ? "bg-emerald-500 text-slate-950"
                   : "bg-slate-800 text-slate-300 hover:bg-slate-700"
               }`}
             >
-              {status.replace("_", " ")}
+              ALL
             </button>
-          ))}
+            <button
+              onClick={() => setActiveFilter("NEW_24H")}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+                activeFilter === "NEW_24H"
+                  ? "bg-amber-400 text-slate-950"
+                  : "bg-amber-950/70 text-amber-300 border border-amber-800/70 hover:bg-amber-900/70"
+              }`}
+            >
+              🔥 NEW (&lt; 24H) ({fresh24hCount})
+            </button>
+            {STATUS_OPTIONS.map((status) => (
+              <button
+                key={status}
+                onClick={() => setActiveFilter(status)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+                  activeFilter === status
+                    ? "bg-emerald-500 text-slate-950"
+                    : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+                }`}
+              >
+                {status.replace("_", " ")}
+              </button>
+            ))}
+          </div>
+          <span className="text-xs text-slate-400">
+            Showing {filteredMatches.length} of {matches.length} job{matches.length === 1 ? "" : "s"}
+          </span>
         </div>
-        <span className="text-xs text-slate-400">
-          Showing {filteredMatches.length} of {matches.length} job{matches.length === 1 ? "" : "s"}
-        </span>
+
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-2.5 border-t border-slate-800/80">
+          <div className="flex flex-wrap items-center gap-2">
+            {!readOnly && (
+              <button
+                type="button"
+                onClick={handleSelectAllUntailored}
+                disabled={filteredMatches.length === 0}
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-200 hover:bg-slate-700 border border-slate-700 disabled:opacity-40 disabled:pointer-events-none transition"
+              >
+                {filteredMatches.length > 0 &&
+                filteredMatches.every((m) => selectedJobIds.includes(m.job_id))
+                  ? "Clear Selection"
+                  : "Select All Visible"}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={handleToggleCollapseVisible}
+              disabled={filteredMatches.length === 0}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800/80 text-slate-300 hover:bg-slate-700 border border-slate-700 disabled:opacity-40 disabled:pointer-events-none transition"
+            >
+              {areTargetCardsCollapsed
+                ? selectedJobIds.length > 0
+                  ? `▾ Expand Selected (${selectedJobIds.length})`
+                  : "▾ Expand All Visible"
+                : selectedJobIds.length > 0
+                ? `▴ Collapse Selected (${selectedJobIds.length})`
+                : "▴ Collapse All Visible"}
+            </button>
+          </div>
+
+          {!readOnly && selectedJobIds.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => handleTailorJobs(selectedJobIds)}
+                disabled={tailoringBatch || deletingMatches}
+                className="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-amber-500 text-slate-950 hover:bg-amber-400 disabled:opacity-50 transition"
+              >
+                {tailoringBatch
+                  ? "Queuing PDFs..."
+                  : `✨ Generate PDFs for Selected (${selectedJobIds.length})`}
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  handleDeleteMatches(
+                    matches.filter((m) => selectedJobIds.includes(m.job_id))
+                  )
+                }
+                disabled={deletingMatches || tailoringBatch}
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-rose-950/90 text-rose-200 hover:bg-rose-900 border border-rose-800 disabled:opacity-50 transition"
+              >
+                {deletingMatches
+                  ? "Deleting..."
+                  : `🗑️ Delete Selected (${selectedJobIds.length})`}
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Feed Cards */}
@@ -529,36 +595,39 @@ export function JobMatchFeed({
                 </div>
               </div>
 
-              {/* LLM Fit Rationale */}
-              <p className="text-sm text-slate-300 leading-relaxed bg-slate-950/60 border border-slate-800/80 rounded-lg p-3">
-                {match.fit_rationale}
-              </p>
+              {/* Collapsible LLM Fit Rationale & Skill Alignment Badges */}
+              {!collapsedMatchIds.includes(match.id) && (
+                <>
+                  <p className="text-sm text-slate-300 leading-relaxed bg-slate-950/60 border border-slate-800/80 rounded-lg p-3">
+                    {match.fit_rationale}
+                  </p>
 
-              {/* Skill Alignment Badges */}
-              <div className="flex flex-wrap gap-1.5 items-center">
-                <span className="text-xs text-slate-400 mr-1">Matched:</span>
-                {match.matched_skills.map((skill) => (
-                  <span
-                    key={skill}
-                    className="text-xs px-2 py-0.5 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-800/50"
-                  >
-                    ✓ {skill}
-                  </span>
-                ))}
-                {match.missing_skills.length > 0 && (
-                  <>
-                    <span className="text-xs text-slate-400 ml-2 mr-1">Gaps:</span>
-                    {match.missing_skills.map((gap) => (
+                  <div className="flex flex-wrap gap-1.5 items-center">
+                    <span className="text-xs text-slate-400 mr-1">Matched:</span>
+                    {match.matched_skills.map((skill) => (
                       <span
-                        key={gap}
-                        className="text-xs px-2 py-0.5 rounded bg-rose-950/70 text-rose-300 border border-rose-800/50"
+                        key={skill}
+                        className="text-xs px-2 py-0.5 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-800/50"
                       >
-                        ! {gap}
+                        ✓ {skill}
                       </span>
                     ))}
-                  </>
-                )}
-              </div>
+                    {match.missing_skills.length > 0 && (
+                      <>
+                        <span className="text-xs text-slate-400 ml-2 mr-1">Gaps:</span>
+                        {match.missing_skills.map((gap) => (
+                          <span
+                            key={gap}
+                            className="text-xs px-2 py-0.5 rounded bg-rose-950/70 text-rose-300 border border-rose-800/50"
+                          >
+                            ! {gap}
+                          </span>
+                        ))}
+                      </>
+                    )}
+                  </div>
+                </>
+              )}
 
               {/* Action Bar: Presigned PDFs, On-Demand Tailoring, Audit Snapshot Viewer, Status Mutation */}
               <div className="pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-3">
@@ -612,6 +681,15 @@ export function JobMatchFeed({
                       </button>
                     )
                   )}
+                  <button
+                    type="button"
+                    onClick={() => toggleCollapseMatch(match.id)}
+                    className="px-2.5 py-1.5 rounded-md text-xs font-medium bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 transition"
+                  >
+                    {collapsedMatchIds.includes(match.id)
+                      ? "▾ Expand Details"
+                      : "▴ Collapse Details"}
+                  </button>
                 </div>
 
                 <div className="flex items-center gap-2">
