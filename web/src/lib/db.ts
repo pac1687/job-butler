@@ -5,6 +5,7 @@ export type MatchStatus = "NEW_MATCH" | "SAVED" | "APPLIED" | "ARCHIVED";
 export interface EvaluatedJobMatch {
   id: string;
   job_id: string;
+  source?: string;
   title: string;
   company: string;
   location: string;

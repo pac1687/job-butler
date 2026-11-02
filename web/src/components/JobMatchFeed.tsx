@@ -16,6 +16,64 @@ interface JobMatchFeedProps {
 const STATUS_OPTIONS: MatchStatus[] = ["NEW_MATCH", "SAVED", "APPLIED", "ARCHIVED"];
 const BATCH_SIZE_OPTIONS: number[] = [5, 10, 15, 20, 30];
 
+function formatJobSource(rawSource?: string | null): {
+  label: string;
+  className: string;
+} {
+  const src = (rawSource || "").trim().toLowerCase();
+  switch (src) {
+    case "linkedin":
+      return {
+        label: "LinkedIn",
+        className:
+          "bg-sky-950/90 text-sky-300 border border-sky-800/70",
+      };
+    case "indeed":
+    case "jobspy":
+      return {
+        label: "Indeed",
+        className:
+          "bg-blue-950/90 text-blue-300 border border-blue-800/70",
+      };
+    case "remotive":
+      return {
+        label: "Remotive",
+        className:
+          "bg-purple-950/90 text-purple-300 border border-purple-800/70",
+      };
+    case "greenhouse":
+      return {
+        label: "Greenhouse",
+        className:
+          "bg-teal-950/90 text-teal-300 border border-teal-800/70",
+      };
+    case "ashby":
+      return {
+        label: "Ashby",
+        className:
+          "bg-violet-950/90 text-violet-300 border border-violet-800/70",
+      };
+    case "lever":
+      return {
+        label: "Lever",
+        className:
+          "bg-cyan-950/90 text-cyan-300 border border-cyan-800/70",
+      };
+    case "on_demand_url":
+      return {
+        label: "Direct URL",
+        className:
+          "bg-fuchsia-950/90 text-fuchsia-300 border border-fuchsia-800/70",
+      };
+    default:
+      return {
+        label: rawSource ? rawSource : "Scraped",
+        className:
+          "bg-slate-800 text-slate-300 border border-slate-700",
+      };
+  }
+}
+
 export function JobMatchFeed({
   initialMatches,
   readOnly = false,
@@ -337,6 +395,16 @@ export function JobMatchFeed({
                       <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-medium">
                         {match.company}
                       </span>
+                      {(() => {
+                        const srcBadge = formatJobSource(match.source);
+                        return (
+                          <span
+                            className={`text-xs px-2 py-0.5 rounded font-medium ${srcBadge.className}`}
+                          >
+                            {srcBadge.label}
+                          </span>
+                        );
+                      })()}
                       {match.is_remote && (
                         <span className="text-xs px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800/60">
                           Remote

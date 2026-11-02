@@ -22,6 +22,7 @@ async function fetchDashboardMatches(): Promise<EvaluatedJobMatch[]> {
       SELECT
         m.id,
         m.job_id,
+        j.source,
         j.title,
         j.company,
         j.location,

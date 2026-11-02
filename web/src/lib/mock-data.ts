@@ -4,6 +4,7 @@ export const DEMO_MATCHES: EvaluatedJobMatch[] = [
   {
     id: "demo-match-1",
     job_id: "demo-job-1",
+    source: "linkedin",
     title: "Senior Full Stack Engineer, AI Platform",
     company: "Linearity Labs",
     location: "San Francisco, CA (Remote)",
@@ -56,6 +57,7 @@ export const DEMO_MATCHES: EvaluatedJobMatch[] = [
   {
     id: "demo-match-2",
     job_id: "demo-job-2",
+    source: "indeed",
     title: "Distributed Systems Backend Engineer",
     company: "Chronicle Cloud",
     location: "Remote (US)",
