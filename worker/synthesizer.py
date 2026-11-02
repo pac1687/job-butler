@@ -251,7 +251,7 @@ class JobSynthesizer:
             protected_metrics=protected_metrics,
             allow_rephrasing=allow_rephrasing,
         )
-        return outcome.final_bullet[: self.config.bullet_max_chars]
+        return outcome.final_bullet
 
     def draft_cover_letter(
         self,

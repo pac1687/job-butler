@@ -144,6 +144,29 @@ export function ProfileEditorClient({
     );
   }
 
+  function handleAddBullet(roleIdx: number) {
+    setExperience((prev) =>
+      prev.map((role, rIdx) =>
+        rIdx === roleIdx
+          ? { ...role, bullets: [...role.bullets, ""] }
+          : role
+      )
+    );
+  }
+
+  function handleRemoveBullet(roleIdx: number, bulletIdx: number) {
+    setExperience((prev) =>
+      prev.map((role, rIdx) =>
+        rIdx === roleIdx
+          ? {
+              ...role,
+              bullets: role.bullets.filter((_, bIdx) => bIdx !== bulletIdx),
+            }
+          : role
+      )
+    );
+  }
+
   return (
     <div className="space-y-8">
       {statusBanner && (
@@ -616,20 +639,44 @@ export function ProfileEditorClient({
                 <span className="text-sm font-bold text-white">
                   {role.title} — {role.company}
                 </span>
-                <span className="text-xs text-slate-400">{role.dates}</span>
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-slate-400">{role.dates}</span>
+                  <button
+                    type="button"
+                    onClick={() => handleAddBullet(rIdx)}
+                    className="px-2.5 py-1 rounded text-xs font-medium bg-slate-800 text-slate-200 hover:bg-slate-700 transition"
+                  >
+                    + Add Bullet
+                  </button>
+                </div>
               </div>
-              <div className="space-y-2">
+              <div className="space-y-2.5">
                 {role.bullets.map((bullet, bIdx) => (
-                  <input
-                    key={bIdx}
-                    type="text"
-                    maxLength={170}
-                    value={bullet}
-                    onChange={(e) =>
-                      handleBulletChange(rIdx, bIdx, e.target.value)
-                    }
-                    className="w-full bg-slate-900 border border-slate-800 rounded px-3 py-1.5 text-xs text-slate-200"
-                  />
+                  <div key={bIdx} className="flex items-start gap-2">
+                    <div className="flex-1 space-y-1">
+                      <textarea
+                        rows={Math.max(2, Math.ceil((bullet || "").length / 95))}
+                        value={bullet}
+                        onChange={(e) =>
+                          handleBulletChange(rIdx, bIdx, e.target.value)
+                        }
+                        className="w-full bg-slate-900 border border-slate-800 focus:border-indigo-500 focus:outline-none rounded-lg px-3 py-2 text-xs text-slate-200 leading-relaxed resize-y"
+                      />
+                      <div className="flex justify-end">
+                        <span className="text-[11px] text-slate-500">
+                          {(bullet || "").length} chars
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      title="Delete bullet"
+                      onClick={() => handleRemoveBullet(rIdx, bIdx)}
+                      className="mt-1.5 px-2 py-1 rounded text-xs text-slate-500 hover:text-rose-400 hover:bg-rose-950/50 transition"
+                    >
+                      ✕
+                    </button>
+                  </div>
                 ))}
               </div>
             </div>

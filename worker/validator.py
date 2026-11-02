@@ -144,17 +144,18 @@ class GuardrailValidator:
                 similarity_score=0.0,
             )
 
-        if len(candidate) > self.max_bullet_chars:
+        allowed_len = max(self.max_bullet_chars, len(source_bullet.strip()) + 25)
+        if len(candidate) > allowed_len:
             logger.warning(
                 "Bullet exceeded %d chars (%d); reverting to verbatim source.",
-                self.max_bullet_chars,
+                allowed_len,
                 len(candidate),
             )
             return BulletValidationOutcome(
                 final_bullet=source_bullet,
                 passed=False,
                 used_fallback=True,
-                failure_reason=f"Length {len(candidate)} > {self.max_bullet_chars}",
+                failure_reason=f"Length {len(candidate)} > {allowed_len}",
                 similarity_score=1.0,
             )
 
