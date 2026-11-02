@@ -861,7 +861,7 @@ class JobSynthesizer:
         system_prompt = (
             "Extract the candidate's resume into structured JSON with keys: "
             "basics (name, title, email, phone, location, links, summary), "
-            "skills (languages, frameworks, cloud, databases), "
+            "skills (languages, frameworks, cloud, databases, ai_developer_tooling), "
             "experience (list of {role_id, company, title, location, dates, bullets, tags}), "
             "and education (list of {institution, degree, dates}). "
             "Preserve all bullets and metrics verbatim."

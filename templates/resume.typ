@@ -73,11 +73,21 @@
 }
 
 // Technical Skills
+#let format_category(cat) = {
+  let lower_cat = lower(cat)
+  if lower_cat == "ai_developer_tooling" or lower_cat == "ai_tooling" or lower_cat == "ai" [AI & Developer Tooling]
+  else if lower_cat == "developer_tools" or lower_cat == "tools" [Developer Tools]
+  else {
+    let clean = cat.replace("_", " ")
+    [#upper(clean.first())#clean.slice(1)]
+  }
+}
+
 #if skills.len() > 0 [
   #section_header("Technical Skills")
   #for (category, items) in skills [
     #if type(items) == array and items.len() > 0 [
-      *#upper(category.first())#category.slice(1):* #items.join(", ") \
+      *#format_category(category):* #items.join(", ") \
     ]
   ]
 ]

@@ -252,3 +252,42 @@ def test_compile_resume_with_auto_trim_produces_coherent_single_bullet(tmp_path:
     assert "Tooling & Automation:" not in trimmed_bullets[0]
     assert "Webhooks & Third-Party API Integration:" in trimmed_bullets[0]
 
+
+def test_resume_typ_renders_ai_developer_tooling_category(tmp_path: Path) -> None:
+    if not shutil.which("typst"):
+        pytest.skip("typst binary not found on host (runs in docker)")
+    typesetter = TypstTypesetter()
+    payload = {
+        "basics": {
+            "name": "Justin Pacubas",
+            "title": "Full-Stack Engineer",
+            "email": "justin@example.com",
+            "location": "Remote",
+            "links": ["https://linkedin.com/in/example"],
+            "summary": "Full-Stack Engineer.",
+        },
+        "skills": {
+            "languages": ["TypeScript", "Node.js"],
+            "cloud": ["AWS", "Docker"],
+            "ai_developer_tooling": ["AWS Kiro", "Claude (Anthropic)", "AI Developer Workflows"],
+        },
+        "experience": [
+            {
+                "role_id": "pushly",
+                "company": "Pushly",
+                "title": "Full-Stack Engineer",
+                "location": "Remote",
+                "dates": "2022 - Present",
+                "bullets": [
+                    "Integrated developer tooling including AI tools and workflows (AWS Kiro using Claude models).",
+                ],
+            }
+        ],
+        "education": [],
+    }
+    out_pdf = tmp_path / "ai_skills_resume.pdf"
+    res = typesetter.compile_template("resume.typ", payload, out_pdf, enforce_single_page=True)
+    assert res.exists()
+    assert verify_single_page_pdf(res) == 1
+
+

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Annotated, Dict, List, Optional
-from pydantic import BaseModel, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 # Page-budget enforced bullet string: <= 170 characters per SPEC.md section 3.3
 TailoredBullet = Annotated[
@@ -99,10 +99,13 @@ class ParsedBasics(BaseModel):
 
 
 class ParsedSkills(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     languages: List[str] = Field(default_factory=list)
     frameworks: List[str] = Field(default_factory=list)
     cloud: List[str] = Field(default_factory=list)
     databases: List[str] = Field(default_factory=list)
+    ai_developer_tooling: List[str] = Field(default_factory=list)
 
 
 class ParsedMasterProfile(BaseModel):

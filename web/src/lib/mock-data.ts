@@ -153,6 +153,7 @@ export const DEFAULT_MASTER_PROFILE: MasterProfileRecord = {
     frameworks: ["Next.js", "React", "FastAPI", "Node.js", "Tailwind CSS"],
     cloud: ["AWS", "Docker", "Cloudflare R2", "Vercel"],
     databases: ["PostgreSQL", "Redis", "ChromaDB"],
+    ai_developer_tooling: ["AWS Kiro", "Claude", "AI Developer Workflows"],
   },
   experience: [
     {

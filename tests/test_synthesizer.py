@@ -37,9 +37,10 @@ def test_prioritize_skills_promotes_matching_skills_to_front() -> None:
     skills_map = {
         "languages": ["Ruby on Rails", "TypeScript", "Perl", "JavaScript (ES6+)", "SQL"],
         "databases": ["MySQL", "Redis", "PostgreSQL"],
+        "ai_developer_tooling": ["AI Developer Workflows", "Claude", "AWS Kiro"],
     }
-    job_desc = "We need an engineer experienced with TypeScript and PostgreSQL to build scalable web applications."
-    matched_skills = ["TypeScript", "PostgreSQL"]
+    job_desc = "We need an engineer experienced with TypeScript, Claude, and PostgreSQL to build scalable web applications."
+    matched_skills = ["TypeScript", "PostgreSQL", "Claude"]
 
     prioritized = synthesizer.prioritize_skills(
         skills_map=skills_map,
@@ -51,9 +52,12 @@ def test_prioritize_skills_promotes_matching_skills_to_front() -> None:
     assert prioritized["languages"][0] == "TypeScript"
     # PostgreSQL should be first in databases
     assert prioritized["databases"][0] == "PostgreSQL"
+    # Claude should be first in ai_developer_tooling
+    assert prioritized["ai_developer_tooling"][0] == "Claude"
     # All original skills must still be present and no new skills added
     assert set(prioritized["languages"]) == set(skills_map["languages"])
     assert set(prioritized["databases"]) == set(skills_map["databases"])
+    assert set(prioritized["ai_developer_tooling"]) == set(skills_map["ai_developer_tooling"])
 
 
 def test_select_nearest_bullets_reorders_by_relevance() -> None:
