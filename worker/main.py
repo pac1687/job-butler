@@ -344,7 +344,20 @@ def run_nightly_batch(config: WorkerConfig, max_jobs: Optional[int] = None) -> N
             preferred_locations=preferred_locations,
             allow_remote=allow_remote,
         )
-        profile_summary = json.dumps(state["master_profile"].get("basics", {}))
+        basics = state["master_profile"].get("basics") or {}
+        skills_map = state["master_profile"].get("skills") or {}
+        flat_skills: List[str] = []
+        if isinstance(skills_map, dict):
+            for vals in skills_map.values():
+                if isinstance(vals, list):
+                    flat_skills.extend(str(v) for v in vals if v)
+        profile_summary_parts = [
+            str(basics.get("title") or ""),
+            str(basics.get("summary") or ""),
+            ", ".join(flat_skills),
+        ]
+        profile_summary = "\n".join(p for p in profile_summary_parts if p.strip()) or json.dumps(basics)
+
         ranked = ranker.filter_and_rank(
             jobs=scraped,
             positive_titles=state["preferences"]["positive_titles"],
@@ -357,13 +370,22 @@ def run_nightly_batch(config: WorkerConfig, max_jobs: Optional[int] = None) -> N
         )
 
         top_candidates = ranked[:effective_max_jobs]
+        scraped_by_src: Dict[str, int] = {}
+        for j in scraped:
+            scraped_by_src[j.source] = scraped_by_src.get(j.source, 0) + 1
+        top_by_src: Dict[str, int] = {}
+        for j, _ in top_candidates:
+            top_by_src[j.source] = top_by_src.get(j.source, 0) + 1
+
         logger.info(
-            "Discovery batch scraped %d new jobs; %d passed location + semantic + company-diversity filter (>= %.2f, max %d/company). Scoring top %d matches (max_jobs=%d)...",
+            "Discovery batch scraped %d new jobs %s; %d passed location + semantic + diversity filter (>= %.2f, max %d/company). Scoring top %d matches %s (max_jobs=%d)...",
             len(scraped),
+            scraped_by_src,
             len(ranked),
             state["preferences"]["min_semantic_score"],
             max_per_company,
             len(top_candidates),
+            top_by_src,
             effective_max_jobs,
         )
         for idx, (job, sem_score) in enumerate(top_candidates, start=1):

@@ -136,38 +136,76 @@ def filter_by_location(
     ]
 
 
+def _is_unhydrated_stage1_job(job: ScrapedJob) -> bool:
+    """
+    Returns True if the job is a Stage-1 unhydrated card (e.g. LinkedIn search card before
+    lazy detail-page hydration) that only has a short title/company placeholder rather than a full JD.
+    """
+    desc = (job.description_text or "").strip()
+    return (
+        job.source.lower() == "linkedin"
+        and ("Matched search query:" in desc or len(desc) < 250)
+    )
+
+
 def diversify_by_company(
     scored_jobs: Sequence[Tuple[ScrapedJob, float]],
     max_per_company: int = 2,
+    interleave_sources: bool = True,
 ) -> List[Tuple[ScrapedJob, float]]:
     """
-    Round-robin interleaves ranked jobs across distinct companies and enforces `max_per_company`
-    so a single company with hundreds of postings (e.g. Stripe, Cloudflare) cannot monopolize a batch.
+    Round-robin interleaves ranked jobs across distinct companies (enforcing `max_per_company`)
+    and across job sources (`linkedin`, `indeed`, `remotive`, etc.) so no single company or
+    job board monopolizes the top `max_jobs` discovery batch.
     """
     if max_per_company <= 0:
-        return list(scored_jobs)
+        company_capped = list(scored_jobs)
+    else:
+        by_company: dict[str, List[Tuple[ScrapedJob, float]]] = {}
+        for job, score in scored_jobs:
+            comp_key = (job.company or "Unknown").strip().lower()
+            bucket = by_company.setdefault(comp_key, [])
+            if len(bucket) < max_per_company:
+                bucket.append((job, score))
 
-    by_company: dict[str, List[Tuple[ScrapedJob, float]]] = {}
-    for job, score in scored_jobs:
-        comp_key = (job.company or "Unknown").strip().lower()
-        bucket = by_company.setdefault(comp_key, [])
-        if len(bucket) < max_per_company:
-            bucket.append((job, score))
+        # Order companies by their highest-scoring job descending
+        ordered_buckets = sorted(
+            by_company.values(),
+            key=lambda b: b[0][1] if b else 0.0,
+            reverse=True,
+        )
 
-    # Order companies by their highest-scoring job descending
-    ordered_buckets = sorted(
-        by_company.values(),
+        company_capped = []
+        for round_idx in range(max_per_company):
+            for bucket in ordered_buckets:
+                if round_idx < len(bucket):
+                    company_capped.append(bucket[round_idx])
+
+    if not interleave_sources or len(company_capped) <= 1:
+        return company_capped
+
+    by_source: dict[str, List[Tuple[ScrapedJob, float]]] = {}
+    for job, score in company_capped:
+        src_key = (job.source or "unknown").strip().lower()
+        by_source.setdefault(src_key, []).append((job, score))
+
+    if len(by_source) <= 1:
+        return company_capped
+
+    # Order source buckets by their top-scoring candidate descending
+    source_buckets = sorted(
+        by_source.values(),
         key=lambda b: b[0][1] if b else 0.0,
         reverse=True,
     )
+    max_source_len = max(len(b) for b in source_buckets)
+    interleaved: List[Tuple[ScrapedJob, float]] = []
+    for idx in range(max_source_len):
+        for s_bucket in source_buckets:
+            if idx < len(s_bucket):
+                interleaved.append(s_bucket[idx])
 
-    diversified: List[Tuple[ScrapedJob, float]] = []
-    for round_idx in range(max_per_company):
-        for bucket in ordered_buckets:
-            if round_idx < len(bucket):
-                diversified.append(bucket[round_idx])
-
-    return diversified
+    return interleaved
 
 
 def cosine_similarity(vec_a: Sequence[float], vec_b: Sequence[float]) -> float:
@@ -325,7 +363,10 @@ class SemanticRanker:
 
         effective_anchors = anchors or [candidates[0].title]
         profile_text = profile_summary_text or candidates[0].title
-        job_texts = [f"{job.title}\n{job.description_text[:1200]}" for job in candidates]
+        job_texts = [
+            job.title if _is_unhydrated_stage1_job(job) else f"{job.title}\n{job.description_text[:1200]}"
+            for job in candidates
+        ]
 
         logger.info("Computing BGE vector embeddings for %d candidate jobs...", len(candidates))
         all_vectors = self.embed_texts([profile_text, *effective_anchors, *job_texts])
@@ -340,7 +381,12 @@ class SemanticRanker:
                 (max(0.0, cosine_similarity(job_vec, a_vec)) for a_vec in anchor_vecs),
                 default=profile_sim,
             )
-            combined = min(1.0, max(0.0, round((0.60 * profile_sim) + (0.40 * best_title_sim), 2)))
+            if _is_unhydrated_stage1_job(job):
+                # Stage-1 LinkedIn cards do not yet have full descriptions (hydrated lazily in Stage 2
+                # to prevent 429s), so weight title anchor alignment at 85% and profile summary at 15%
+                combined = min(1.0, max(0.0, round((0.85 * best_title_sim) + (0.15 * profile_sim), 2)))
+            else:
+                combined = min(1.0, max(0.0, round((0.60 * profile_sim) + (0.40 * best_title_sim), 2)))
             if combined >= min_semantic_score:
                 scored.append((job, combined))
 

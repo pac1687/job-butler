@@ -151,4 +151,26 @@ def test_parse_and_check_recency_filters_older_than_7_days() -> None:
     assert iso_stale == "2026-10-15"
 
 
+def test_diversify_by_company_interleaves_across_sources() -> None:
+    ind1 = _make_job("Full Stack Engineer", company="Alpha", url_suffix="1")
+    ind1.source = "indeed"
+    ind2 = _make_job("Solutions Engineer", company="Beta", url_suffix="2")
+    ind2.source = "indeed"
+    li1 = _make_job("Product Solutions Engineer", company="Gamma", url_suffix="3")
+    li1.source = "linkedin"
+    rem1 = _make_job("Technical Support Engineer", company="Delta", url_suffix="4")
+    rem1.source = "remotive"
+
+    scored = [
+        (ind1, 0.92),
+        (ind2, 0.90),
+        (li1, 0.88),
+        (rem1, 0.85),
+    ]
+    diversified = diversify_by_company(scored, max_per_company=2, interleave_sources=True)
+    # Round-robin across sources: top indeed, top linkedin, top remotive, then second indeed
+    assert [j.source for j, _ in diversified] == ["indeed", "linkedin", "remotive", "indeed"]
+
+
+
 
