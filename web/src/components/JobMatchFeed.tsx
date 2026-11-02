@@ -250,38 +250,22 @@ export function JobMatchFeed({
   }
 
   return (
-    <div className="space-y-6">
-      {/* Top Controls Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-4 bg-slate-900/70 border border-slate-800 rounded-xl p-4">
-        <div className="flex flex-wrap items-center gap-2">
-          {["ALL", ...STATUS_OPTIONS].map((status) => (
-            <button
-              key={status}
-              onClick={() => setActiveFilter(status)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
-                activeFilter === status
-                  ? "bg-emerald-500 text-slate-950"
-                  : "bg-slate-800 text-slate-300 hover:bg-slate-700"
-              }`}
-            >
-              {status.replace("_", " ")}
-            </button>
-          ))}
-        </div>
-
-        {!readOnly && (
+    <div className="space-y-4">
+      {/* Bulk & Queue Actions Bar */}
+      {!readOnly && (
+        <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-900/70 border border-slate-800 rounded-xl p-4">
           <div className="flex flex-wrap items-center gap-2">
-            {filteredMatches.length > 0 && (
-              <button
-                type="button"
-                onClick={handleSelectAllUntailored}
-                className="px-3 py-2 rounded-lg text-xs font-semibold bg-slate-800 text-slate-200 hover:bg-slate-700 border border-slate-700 transition"
-              >
-                {filteredMatches.every((m) => selectedJobIds.includes(m.job_id))
-                  ? "Clear Selection"
-                  : "Select All Visible"}
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={handleSelectAllUntailored}
+              disabled={filteredMatches.length === 0}
+              className="px-3 py-2 rounded-lg text-xs font-semibold bg-slate-800 text-slate-200 hover:bg-slate-700 border border-slate-700 disabled:opacity-40 disabled:pointer-events-none transition"
+            >
+              {filteredMatches.length > 0 &&
+              filteredMatches.every((m) => selectedJobIds.includes(m.job_id))
+                ? "Clear Selection"
+                : "Select All Visible"}
+            </button>
             {selectedJobIds.length > 0 && (
               <>
                 <button
@@ -310,6 +294,9 @@ export function JobMatchFeed({
                 </button>
               </>
             )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
             <div className="flex items-center bg-slate-950 border border-slate-700 rounded-lg overflow-hidden">
               <label
                 htmlFor="batch-max-jobs"
@@ -351,8 +338,8 @@ export function JobMatchFeed({
               + Submit Job URL to Worker Queue
             </button>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {discoveryNotice && (
         <div className="bg-emerald-950/60 border border-emerald-800/80 text-emerald-300 rounded-xl px-4 py-3 text-xs flex items-center justify-between gap-3">
@@ -365,6 +352,28 @@ export function JobMatchFeed({
           </button>
         </div>
       )}
+
+      {/* Stage Filter Tabs (below bulk actions, directly above job listing cards) */}
+      <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+        <div className="flex flex-wrap items-center gap-2">
+          {["ALL", ...STATUS_OPTIONS].map((status) => (
+            <button
+              key={status}
+              onClick={() => setActiveFilter(status)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+                activeFilter === status
+                  ? "bg-emerald-500 text-slate-950"
+                  : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+              }`}
+            >
+              {status.replace("_", " ")}
+            </button>
+          ))}
+        </div>
+        <span className="text-xs text-slate-400">
+          Showing {filteredMatches.length} of {matches.length} job{matches.length === 1 ? "" : "s"}
+        </span>
+      </div>
 
       {/* Feed Cards */}
       {filteredMatches.length === 0 ? (
