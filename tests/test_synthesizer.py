@@ -364,7 +364,7 @@ def test_combine_bullets_coherently_merges_two_accomplishments() -> None:
             job_title="Software Engineer",
         )
         assert "Delivered remote hardware" in res_fallback
-        assert "proprietary rating systems, while executing endpoint disk encryption (PGP, BestCrypt)" in res_fallback
+        assert "and executed endpoint disk encryption (PGP, BestCrypt)" in res_fallback
 
 
 def test_build_tailored_payload_attaches_combined_bullet_for_two_bullet_roles() -> None:

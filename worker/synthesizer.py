@@ -250,14 +250,9 @@ class JobSynthesizer:
             (idx, bullet, cosine_similarity(job_vec, b_vec))
             for idx, (bullet, b_vec) in enumerate(zip(bullets, bullet_vecs))
         ]
-        # Order top `max_bullets` by semantic similarity. The candidate's primary baseline accomplishment
-        # (idx == 0) retains a stability priority (+0.08) so a secondary subtask does not eclipse the core role function
-        # unless distinctly more relevant to the target job.
-        top_selected = sorted(
-            scored,
-            key=lambda item: item[2] + (0.08 if item[0] == 0 else 0.0),
-            reverse=True,
-        )[:max_bullets]
+        # Pure semantic relevance ordering: whichever accomplishment best aligns with the target
+        # job description is ranked first. No artificial assumption that the first bullet is most important.
+        top_selected = sorted(scored, key=lambda item: item[2], reverse=True)[:max_bullets]
         return [item[1] for item in top_selected]
 
     def generate_tailored_headline(
@@ -553,9 +548,10 @@ class JobSynthesizer:
         )
         return outcome.final_bullet
 
-    def combine_bullets(
+    def consolidate_bullets(
         self,
-        source_bullets: Sequence[str],
+        bullets_to_combine: Sequence[str] = (),
+        source_bullets: Sequence[str] = (),
         role_title: str = "",
         company: str = "",
         job_title: str = "",
@@ -563,31 +559,44 @@ class JobSynthesizer:
         protected_metrics: Sequence[str] = (),
     ) -> str:
         """
-        Synthesizes a single cohesive, high-impact resume bullet point from two source accomplishments.
-        Ensures the primary role function (from the first bullet) remains prominent while integrating
-        the secondary technical capabilities or project achievements.
+        Synthesizes multiple accomplishments into a single coherent, high-impact resume bullet point
+        tailored to the target job.
+        Does not assume any accomplishment is inherently more important.
+        Unifies scope into a grammatically natural compound sentence with no mid-sentence headers.
         """
-        valid_bullets = [b.strip() for b in source_bullets if b and b.strip()]
+        raw_list = list(bullets_to_combine) if bullets_to_combine else list(source_bullets)
+        valid_bullets = [b.strip() for b in raw_list if b and b.strip()]
         if not valid_bullets:
             return ""
         if len(valid_bullets) == 1:
             return valid_bullets[0]
 
         b1, b2 = valid_bullets[0], valid_bullets[1]
+        header_match1 = LEADING_HEADER_REGEX.match(b1)
         header_match2 = LEADING_HEADER_REGEX.match(b2)
+        h1 = header_match1.group(1).strip() if header_match1 else ""
+        h2 = header_match2.group(1).strip() if header_match2 else ""
+        clean_b1 = b1[header_match1.end():].strip() if header_match1 else b1
         clean_b2 = b2[header_match2.end():].strip() if header_match2 else b2
 
+        header_instruction = ""
+        if h1 and h2:
+            header_instruction = f"If appropriate, unify the topics into a single concise header at the start (e.g. '{h1} & {h2}: ' or '{h1}: '). NEVER include a second header in the middle of the sentence."
+        elif h1:
+            header_instruction = f"Preserve the topic header '{h1}: ' at the start of the bullet. NEVER put a topic header in the middle of the sentence."
+
         system_prompt = (
-            "You are an expert executive resume editor. Combine the candidate's two accomplishments "
-            f"from the role '{role_title}' at '{company}' into a single, cohesive, high-impact resume bullet point. "
-            "CRITICAL RULES: "
-            "1. Coherently merge both accomplishments so that the primary role function (from the first accomplishment) "
-            "remains clear and prominent while integrating the technical capabilities from the second accomplishment. "
-            "2. NEVER include a second topic header (such as 'Tooling & Automation:') in the body of the bullet. "
-            "If the primary accomplishment begins with a header prefix (e.g. 'Project:'), preserve only that leading header. "
-            "3. Keep all numbers, metrics, and named technologies verbatim (e.g., PGP, BestCrypt, rating systems). Do not invent tools or metrics. "
-            "4. The output MUST be a single grammatically complete sentence ending with a period (between 120 and 220 characters). "
-            f"5. NEVER include any of these forbidden terms: {list(forbidden_terms)}. "
+            "You are an expert executive resume writer. The candidate has multiple accomplishments "
+            f"for the role '{role_title}' at '{company}'. Consolidate them into ONE coherent, high-impact resume bullet point "
+            f"tailored to the target job '{job_title}'. "
+            "CRITICAL COHERENCE RULES: "
+            "1. COHERENCE: The output MUST be a single, natural, grammatically unified sentence ending with a period. "
+            "Do NOT awkwardly paste sentences together with ', while ...'. Instead, synthesize them into a clean, flowing compound sentence (e.g. 'Engineered X ..., and built Y ...'). "
+            "2. NO FIRST-BULLET BIAS: Neither accomplishment is inherently more important; synthesize both to reflect the candidate's strongest capabilities for the target job. "
+            f"3. HEADERS: {header_instruction} "
+            "4. TRUTHFULNESS & METRICS: Preserve all numbers, metrics, versions, and named technologies verbatim (e.g. PGP, BestCrypt, rating systems, Node, React). Do not invent tools or metrics. "
+            "5. LENGTH: The final bullet must be concise (maximum 185 characters). "
+            f"6. FORBIDDEN TERMS: Never include any of these terms: {list(forbidden_terms)}. "
             'Return ONLY JSON: {"bullet": "..."}'
         )
         user_prompt = json.dumps(
@@ -595,8 +604,8 @@ class JobSynthesizer:
                 "role": role_title,
                 "company": company,
                 "target_job_title": job_title,
-                "primary_accomplishment": b1,
-                "secondary_accomplishment": clean_b2,
+                "accomplishment_a": clean_b1,
+                "accomplishment_b": clean_b2,
             }
         )
         try:
@@ -608,7 +617,7 @@ class JobSynthesizer:
             )
             candidate = str(data.get("bullet") or "").strip()
         except Exception as exc:
-            logger.warning("combine_bullets LLM call failed (%s); using heuristic fallback.", exc)
+            logger.warning("consolidate_bullets LLM call failed (%s); using heuristic fallback.", exc)
             candidate = merge_two_bullets(b1, b2)
 
         outcome = self.validator.validate_combined_bullet(
@@ -619,6 +628,9 @@ class JobSynthesizer:
             protected_metrics=protected_metrics,
         )
         return outcome.final_bullet
+
+    # Backwards-compatibility alias
+    combine_bullets = consolidate_bullets
 
     def draft_cover_letter(
         self,
@@ -731,10 +743,10 @@ class JobSynthesizer:
                 for b in selected_bullets
             ]
 
-            combined_bullet = None
-            if len(source_bullets) == 2:
-                combined_bullet = self.combine_bullets(
-                    source_bullets=source_bullets,
+            consolidated_bullet = None
+            if len(source_bullets) >= 2:
+                consolidated_bullet = self.consolidate_bullets(
+                    bullets_to_combine=selected_bullets[:2],
                     role_title=role.get("title", ""),
                     company=role.get("company", ""),
                     job_title=job.title,
@@ -742,9 +754,9 @@ class JobSynthesizer:
                     protected_metrics=protected_metrics,
                 )
 
-            # If max_bullets is explicitly constrained to 1 for a 2-bullet role, use the combined bullet
-            if max_bullets == 1 and combined_bullet:
-                final_bullets = [combined_bullet]
+            # If max_bullets is explicitly constrained to 1 for a multi-bullet role, use the consolidated bullet
+            if max_bullets == 1 and consolidated_bullet:
+                final_bullets = [consolidated_bullet]
             else:
                 final_bullets = validated_bullets
 
@@ -757,8 +769,9 @@ class JobSynthesizer:
                 "bullets": final_bullets,
                 "source_bullet_count": len(source_bullets),
             }
-            if combined_bullet:
-                role_entry["combined_bullet"] = combined_bullet
+            if consolidated_bullet:
+                role_entry["consolidated_bullet"] = consolidated_bullet
+                role_entry["combined_bullet"] = consolidated_bullet
             tailored_experience.append(role_entry)
 
         # 4. Tailored cover letter drafting

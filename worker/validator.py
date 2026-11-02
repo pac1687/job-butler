@@ -239,9 +239,9 @@ def verify_context_and_entities_preserved(
 
 def merge_two_bullets(b1: str, b2: str) -> str:
     """
-    Deterministically combines two bullet points into a single coherent sentence,
-    preserving the primary duty (first bullet) while integrating the secondary project (second bullet).
-    Safely strips any leading topic header from the second bullet so it doesn't get embedded mid-sentence.
+    Deterministically consolidates two bullet points into a single coherent compound sentence.
+    Unifies leading topic headers so that no header is ever placed mid-sentence.
+    Joins the two clauses naturally with ', and '.
     """
     clean1 = (b1 or "").strip().rstrip(".")
     clean2 = (b2 or "").strip().rstrip(".")
@@ -250,55 +250,41 @@ def merge_two_bullets(b1: str, b2: str) -> str:
     if not clean2:
         return f"{clean1}."
 
-    # Strip any leading topic header from b2 so it doesn't get embedded mid-sentence
-    # (e.g. 'Tooling & Automation: Implemented...' -> 'Implemented...')
-    header_match2 = LEADING_HEADER_REGEX.match(clean2)
-    if header_match2:
-        clean2 = clean2[header_match2.end():].strip()
+    # Extract any topic headers
+    h1_match = LEADING_HEADER_REGEX.match(clean1)
+    h2_match = LEADING_HEADER_REGEX.match(clean2)
 
-    words2 = clean2.split()
-    if not words2:
-        return f"{clean1}."
+    h1 = h1_match.group(1).strip() if h1_match else ""
+    h2 = h2_match.group(1).strip() if h2_match else ""
 
-    first_word = words2[0]
-    first_lower = first_word.lower()
+    text1 = clean1[h1_match.end():].strip() if h1_match else clean1
+    text2 = clean2[h2_match.end():].strip() if h2_match else clean2
 
-    if first_lower.endswith("ing"):
-        participle = first_lower
-    else:
-        verb_map = {
-            "executed": "executing",
-            "delivered": "delivering",
-            "managed": "managing",
-            "supported": "supporting",
-            "trained": "training",
-            "built": "building",
-            "led": "leading",
-            "designed": "designing",
-            "implemented": "implementing",
-            "configured": "configuring",
-            "maintained": "maintaining",
-            "developed": "developing",
-            "created": "creating",
-            "engineered": "engineering",
-            "automated": "automating",
-            "provided": "providing",
-            "resolved": "resolving",
-            "performed": "performing",
-            "deployed": "deploying",
-            "established": "establishing",
-            "integrated": "integrating",
-            "authored": "authoring",
-        }
-        if first_lower in verb_map:
-            participle = verb_map[first_lower]
-        elif first_lower.endswith("ed"):
-            participle = first_lower[:-2] + "ing"
+    # Determine unified header prefix
+    if h1 and h2:
+        if len(h1) + len(h2) + 3 <= 38:
+            prefix = f"{h1} & {h2}: "
         else:
-            participle = first_lower
+            prefix = f"{h1}: "
+    elif h1:
+        prefix = f"{h1}: "
+    elif h2:
+        prefix = f"{h2}: "
+    else:
+        prefix = ""
 
-    merged_second = " ".join([participle] + words2[1:])
-    return f"{clean1}, while {merged_second}."
+    words2 = text2.split()
+    if not words2:
+        return f"{prefix}{text1}."
+
+    first_w = words2[0]
+    if first_w.isupper() and len(first_w) <= 4:
+        # Acronym like AWS, PGP
+        second_clause = text2
+    else:
+        second_clause = first_w[0].lower() + first_w[1:] + (" " + " ".join(words2[1:]) if len(words2) > 1 else "")
+
+    return f"{prefix}{text1}, and {second_clause}."
 
 
 def verify_complete_bullet(

@@ -204,8 +204,8 @@ def test_compile_resume_with_auto_trim_combines_two_bullets(tmp_path: Path) -> N
     assert "disk encryption" in trimmed_bullets[0]
 
 
-def test_compile_resume_with_auto_trim_never_combines_multibullet_roles(tmp_path: Path) -> None:
-    # SoftVu originally had 4 distinct project bullets with topic headers
+def test_compile_resume_with_auto_trim_produces_coherent_single_bullet(tmp_path: Path) -> None:
+    # SoftVu bullets with topic headers
     payload = {
         "basics": {"name": "Alex Rivera"},
         "experience": [
@@ -247,8 +247,8 @@ def test_compile_resume_with_auto_trim_never_combines_multibullet_roles(tmp_path
     assert len(captured_payloads) >= 2
     trimmed_bullets = captured_payloads[1]["experience"][0]["bullets"]
     assert len(trimmed_bullets) == 1
-    # Must keep the single best project bullet, NOT combine them or insert "while tooling & Automation:"
-    assert "Webhooks & Third-Party API Integration" in trimmed_bullets[0]
+    # Must be a coherent sentence, NEVER have mid-sentence "while tooling & Automation:"
     assert "while tooling" not in trimmed_bullets[0]
-    assert "Tooling & Automation" not in trimmed_bullets[0]
+    assert "Tooling & Automation:" not in trimmed_bullets[0]
+    assert "Webhooks & Third-Party API Integration:" in trimmed_bullets[0]
 

@@ -127,19 +127,18 @@ class TypstTypesetter:
                     attempt + 1,
                 )
                 # Step 1: First reduce one bullet from the oldest role with >1 bullet.
-                # Only combine if this role originally had exactly 2 bullets in the master profile
-                # and has a verified combined_bullet (e.g. ANPAC). For roles with 3+ distinct project bullets
-                # (like SoftVu), drop trailing lower-ranked bullets so each project remains clean and standalone.
+                # When a role is reduced down to 1 bullet, use its verified consolidated_bullet
+                # (synthesized by LLM into a cohesive compound sentence) or clean compound merger.
                 trimmed_bullet = False
                 for role in reversed(working_payload.get("experience", [])):
                     bullets = role.get("bullets") or []
                     if len(bullets) > 1:
-                        if (
-                            len(bullets) == 2
-                            and role.get("source_bullet_count", len(bullets)) == 2
-                            and role.get("combined_bullet")
-                        ):
-                            role["bullets"] = [role["combined_bullet"]]
+                        if len(bullets) == 2:
+                            consolidated = role.get("consolidated_bullet") or role.get("combined_bullet")
+                            if consolidated:
+                                role["bullets"] = [consolidated]
+                            else:
+                                role["bullets"] = [merge_two_bullets(bullets[0], bullets[1])]
                         else:
                             role["bullets"] = bullets[:-1]
                         trimmed_bullet = True

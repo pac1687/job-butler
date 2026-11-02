@@ -231,7 +231,7 @@ def test_merge_two_bullets_combines_primary_and_secondary_coherently() -> None:
 
     merged = merge_two_bullets(b1, b2)
     assert "Delivered remote hardware" in merged
-    assert "proprietary rating systems, while executing endpoint disk encryption (PGP, BestCrypt)" in merged
+    assert "and executed endpoint disk encryption (PGP, BestCrypt)" in merged
     assert merged.endswith(".")
 
 
@@ -244,7 +244,7 @@ def test_merge_two_bullets_strips_leading_header_from_second_bullet() -> None:
     merged = merge_two_bullets(b1, b2)
     assert "Tooling & Automation:" not in merged
     assert "while tooling" not in merged
-    assert "while implementing template cloning" in merged
+    assert "and implemented template cloning" in merged
 
 
 def test_validator_validate_combined_bullet_accepts_valid_and_catches_forbidden() -> None:
