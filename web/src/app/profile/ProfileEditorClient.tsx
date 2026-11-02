@@ -7,6 +7,10 @@ import type {
   TailoringRulesRecord,
 } from "@/lib/db";
 import {
+  CATEGORY_LABELS,
+  detectUnlistedSkillsFromBullets,
+} from "@/lib/skill-sync";
+import {
   saveMasterProfileDirectAction,
   updateJobPreferencesAction,
   updateTailoringRulesAction,
@@ -88,6 +92,13 @@ export function ProfileEditorClient({
     initialRules.max_bullets_per_role
   );
   const [experience, setExperience] = useState(initialProfile.experience);
+  const [skills, setSkills] = useState<Record<string, string[]>>(
+    initialProfile?.skills || {}
+  );
+  const [newSkillInputs, setNewSkillInputs] = useState<Record<string, string>>({});
+  const [pendingSyncItems, setPendingSyncItems] = useState<
+    { skill: string; category: string; enabled: boolean }[] | null
+  >(null);
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
 
   async function handleSavePreferences(e: React.FormEvent) {
@@ -119,14 +130,111 @@ export function ProfileEditorClient({
     setStatusBanner("Saved tailoring guardrail rules to Neon PostgreSQL.");
   }
 
-  async function handleSaveExperience() {
+  function handleRemoveSkill(category: string, skillToRemove: string) {
+    setSkills((prev) => ({
+      ...prev,
+      [category]: (prev[category] || []).filter((s) => s !== skillToRemove),
+    }));
+  }
+
+  function handleAddSkill(category: string) {
+    const val = (newSkillInputs[category] || "").trim();
+    if (!val) return;
+    setSkills((prev) => ({
+      ...prev,
+      [category]: [...(prev[category] || []), val],
+    }));
+    setNewSkillInputs((prev) => ({ ...prev, [category]: "" }));
+  }
+
+  async function handleSaveSkills() {
     await saveMasterProfileDirectAction({
       basics: initialProfile.basics,
-      skills: initialProfile.skills,
+      skills,
+      experience,
+      education: initialProfile.education,
+    });
+    setStatusBanner("Saved Technical Skills inventory to Neon PostgreSQL.");
+  }
+
+  function scanBulletsAndPromptSync() {
+    const allBullets = experience.flatMap((role) => role.bullets || []);
+    const unlisted = detectUnlistedSkillsFromBullets(allBullets, skills);
+    if (unlisted.length === 0) {
+      setStatusBanner("No unlisted technologies found in experience bullets.");
+      return;
+    }
+    setPendingSyncItems(
+      unlisted.map((u) => ({
+        skill: u.skill,
+        category: u.suggestedCategory,
+        enabled: true,
+      }))
+    );
+  }
+
+  async function handleSaveExperience() {
+    const allBullets = experience.flatMap((role) => role.bullets || []);
+    const unlisted = detectUnlistedSkillsFromBullets(allBullets, skills);
+    if (unlisted.length > 0) {
+      // Prompt user with sync modal
+      setPendingSyncItems(
+        unlisted.map((u) => ({
+          skill: u.skill,
+          category: u.suggestedCategory,
+          enabled: true,
+        }))
+      );
+      return;
+    }
+
+    await saveMasterProfileDirectAction({
+      basics: initialProfile.basics,
+      skills,
       experience,
       education: initialProfile.education,
     });
     setStatusBanner("Updated verified master resume bullets.");
+  }
+
+  async function handleConfirmSyncAndSave(syncSkills: boolean) {
+    if (!pendingSyncItems) return;
+
+    const updatedSkills: Record<string, string[]> = { ...skills };
+    let addedCount = 0;
+
+    if (syncSkills) {
+      for (const item of pendingSyncItems) {
+        if (!item.enabled || !item.skill.trim()) continue;
+        const cat = item.category || "ai_developer_tooling";
+        const currentList = updatedSkills[cat] || [];
+        if (
+          !currentList.some(
+            (s) => s.toLowerCase() === item.skill.trim().toLowerCase()
+          )
+        ) {
+          updatedSkills[cat] = [...currentList, item.skill.trim()];
+          addedCount++;
+        }
+      }
+      setSkills(updatedSkills);
+    }
+
+    await saveMasterProfileDirectAction({
+      basics: initialProfile.basics,
+      skills: updatedSkills,
+      experience,
+      education: initialProfile.education,
+    });
+
+    setPendingSyncItems(null);
+    setStatusBanner(
+      syncSkills && addedCount > 0
+        ? `Saved experience bullets and synced ${addedCount} new skill${
+            addedCount === 1 ? "" : "s"
+          } to Technical Skills.`
+        : "Saved verified master resume bullets."
+    );
   }
 
   function handleBulletChange(roleIdx: number, bulletIdx: number, val: string) {
@@ -169,6 +277,118 @@ export function ProfileEditorClient({
 
   return (
     <div className="space-y-8">
+      {/* Sync Skills Prompt Modal (Option 1) */}
+      {pendingSyncItems && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <span className="text-xl">⚡</span>
+                <h3 className="text-base font-bold text-white">
+                  Sync Detected Technologies to Skills?
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPendingSyncItems(null)}
+                className="text-slate-400 hover:text-white text-sm"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-300 leading-relaxed">
+              We detected {pendingSyncItems.length} technology mention
+              {pendingSyncItems.length === 1 ? "" : "s"} in your updated experience bullets
+              that aren’t yet in your Technical Skills section. Select which ones to add:
+            </p>
+
+            <div className="max-h-60 overflow-y-auto space-y-2.5 pr-1">
+              {pendingSyncItems.map((item, idx) => (
+                <div
+                  key={idx}
+                  className="flex items-center gap-3 bg-slate-950/80 border border-slate-800 rounded-lg p-2.5"
+                >
+                  <input
+                    type="checkbox"
+                    checked={item.enabled}
+                    onChange={(e) =>
+                      setPendingSyncItems((prev) =>
+                        prev
+                          ? prev.map((p, pIdx) =>
+                              pIdx === idx ? { ...p, enabled: e.target.checked } : p
+                            )
+                          : null
+                      )
+                    }
+                    className="rounded border-slate-700 bg-slate-900 text-indigo-500 focus:ring-0"
+                  />
+                  <div className="flex-1">
+                    <input
+                      type="text"
+                      value={item.skill}
+                      onChange={(e) =>
+                        setPendingSyncItems((prev) =>
+                          prev
+                            ? prev.map((p, pIdx) =>
+                                pIdx === idx ? { ...p, skill: e.target.value } : p
+                              )
+                            : null
+                        )
+                      }
+                      className="bg-transparent border-b border-transparent focus:border-indigo-500 text-xs font-semibold text-white focus:outline-none w-full"
+                    />
+                  </div>
+                  <select
+                    value={item.category}
+                    onChange={(e) =>
+                      setPendingSyncItems((prev) =>
+                        prev
+                          ? prev.map((p, pIdx) =>
+                              pIdx === idx ? { ...p, category: e.target.value } : p
+                            )
+                          : null
+                      )
+                    }
+                    className="bg-slate-900 border border-slate-700 rounded text-[11px] text-slate-200 px-2 py-1 focus:outline-none"
+                  >
+                    <option value="ai_developer_tooling">AI &amp; Developer Tooling</option>
+                    <option value="cloud">Cloud &amp; DevOps</option>
+                    <option value="languages">Languages</option>
+                    <option value="frameworks">Frameworks &amp; Libraries</option>
+                    <option value="databases">Databases</option>
+                  </select>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setPendingSyncItems(null)}
+                className="px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-white"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => handleConfirmSyncAndSave(false)}
+                className="px-3.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-300 hover:bg-slate-700"
+              >
+                Skip &amp; Save Bullets Only
+              </button>
+              <button
+                type="button"
+                onClick={() => handleConfirmSyncAndSave(true)}
+                className="px-4 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 text-white hover:bg-indigo-500 shadow-md shadow-indigo-500/20"
+              >
+                Add Selected &amp; Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {statusBanner && (
         <div className="bg-emerald-950/60 border border-emerald-800 rounded-xl p-3 text-xs text-emerald-300">
           {statusBanner}
@@ -615,12 +835,112 @@ export function ProfileEditorClient({
         </form>
       </section>
 
-      {/* 3. Visual Experience Bullet Editor (FR-1.2) */}
+      {/* 4. Technical Skills Inventory */}
+      <section className="bg-slate-900/80 border border-slate-800 rounded-xl p-6 space-y-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-bold text-white">
+              4. Technical Skills Inventory
+            </h2>
+            <p className="text-xs text-slate-400 mt-1">
+              Curate the technical skills rendered on your resume and evaluated by ATS algorithms. Re-ordered dynamically during tailoring.
+            </p>
+          </div>
+          <div className="flex items-center gap-2.5">
+            <button
+              type="button"
+              onClick={scanBulletsAndPromptSync}
+              className="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-indigo-300 border border-slate-700 hover:bg-slate-700 transition"
+            >
+              🔍 Scan Bullets for New Skills
+            </button>
+            <button
+              type="button"
+              onClick={handleSaveSkills}
+              className="px-4 py-1.5 rounded-lg text-xs font-semibold bg-emerald-500 text-slate-950 hover:bg-emerald-400 transition"
+            >
+              Save Technical Skills
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {Object.entries(CATEGORY_LABELS).map(([catKey, catLabel]) => {
+            const list = skills[catKey] || [];
+            return (
+              <div
+                key={catKey}
+                className="bg-slate-950/70 border border-slate-800 rounded-lg p-4 space-y-3"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-200">
+                    {catLabel} ({list.length})
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-1.5 min-h-[44px]">
+                  {list.map((skill) => (
+                    <span
+                      key={skill}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs bg-slate-800 text-slate-200 border border-slate-700"
+                    >
+                      {skill}
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveSkill(catKey, skill)}
+                        className="text-slate-400 hover:text-rose-300"
+                        title="Remove skill"
+                      >
+                        ✕
+                      </button>
+                    </span>
+                  ))}
+                  {list.length === 0 && (
+                    <span className="text-xs text-slate-500 italic py-1">
+                      No skills added yet
+                    </span>
+                  )}
+                </div>
+                <div className="flex gap-2 pt-1">
+                  <input
+                    type="text"
+                    value={newSkillInputs[catKey] || ""}
+                    onChange={(e) =>
+                      setNewSkillInputs({ ...newSkillInputs, [catKey]: e.target.value })
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        handleAddSkill(catKey);
+                      }
+                    }}
+                    placeholder={`+ Add to ${catLabel}`}
+                    className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-xs text-white flex-1 focus:outline-none focus:border-indigo-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleAddSkill(catKey)}
+                    className="px-2.5 py-1 rounded-lg text-xs bg-slate-800 text-slate-200 hover:bg-slate-700"
+                  >
+                    Add
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
+      {/* 5. Visual Experience Bullet Editor (FR-1.2) */}
       <section className="bg-slate-900/80 border border-slate-800 rounded-xl p-6 space-y-4">
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-bold text-white">
-            3. Verified Source Experience Bullets
-          </h2>
+          <div>
+            <h2 className="text-lg font-bold text-white">
+              5. Verified Source Experience Bullets
+            </h2>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Saving checks for newly introduced tools and prompts to optionally sync them into Technical Skills.
+            </p>
+          </div>
           <button
             onClick={handleSaveExperience}
             className="px-4 py-1.5 rounded-lg text-xs font-semibold bg-indigo-500 text-white hover:bg-indigo-400 transition"

@@ -9,6 +9,7 @@ from worker.synthesizer import (
     JobSynthesizer,
     apply_full_stack_style,
     detect_full_stack_style,
+    extract_searchable_skill_pool,
     normalize_full_stack_hyphenation,
 )
 
@@ -456,4 +457,52 @@ def test_consolidate_role_bullets_four_to_two_thematic() -> None:
     # Check that neither bullet uses the awkward 'while' conjunction
     for b in consolidated:
         assert "while" not in b.lower()
+
+
+def test_extract_searchable_skill_pool_indexes_bullet_skills_and_curated_skills() -> None:
+    master_profile = {
+        "basics": {"name": "Justin Pacubas", "title": "Full-Stack Engineer"},
+        "skills": {
+            "languages": ["TypeScript", "Node.js"],
+            "cloud": ["AWS (Lambda, S3)"],
+        },
+        "experience": [
+            {
+                "role_id": "pushly",
+                "company": "Pushly",
+                "title": "Engineer",
+                "bullets": [
+                    "Integrated developer tooling including AI tools and workflows (AWS Kiro using Claude models).",
+                ],
+                "tags": ["React", "NestJS"],
+            },
+            {
+                "role_id": "anpac",
+                "company": "ANPAC",
+                "title": "Trainee",
+                "bullets": [
+                    "Executed endpoint disk encryption (PGP, BestCrypt) across field agent machines.",
+                ],
+            },
+        ],
+    }
+
+    pool = extract_searchable_skill_pool(master_profile)
+    pool_lowers = [s.lower() for s in pool]
+
+    # Curated skills present
+    assert "typescript" in pool_lowers
+    assert "node.js" in pool_lowers
+    assert "aws (lambda, s3)" in pool_lowers
+
+    # Role tags present
+    assert "react" in pool_lowers
+    assert "nestjs" in pool_lowers
+
+    # Technologies extracted from experience bullets present
+    assert "aws kiro" in pool_lowers or "kiro" in pool_lowers
+    assert "claude" in pool_lowers
+    assert "pgp" in pool_lowers
+    assert "bestcrypt" in pool_lowers
+
 

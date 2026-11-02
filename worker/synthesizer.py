@@ -85,6 +85,56 @@ def _extract_json_object(raw_content: str) -> Dict[str, Any]:
     return json.loads(cleaned)
 
 
+def extract_searchable_skill_pool(master_profile: Dict[str, Any]) -> List[str]:
+    """
+    Constructs a comprehensive, deduplicated searchable skill pool combining:
+    1. Curated skills from `master_profile['skills']` across all categories.
+    2. Tags defined on each role entry in `master_profile['experience']`.
+    3. Technical identifiers, tools, and libraries verified within experience bullets
+       (e.g., AWS Kiro, Claude, Webpack, BestCrypt, PGP, Apex, D3.js).
+
+    Ensures semantic ranking and job evaluation have full visibility into the candidate's
+    entire technical capability without altering the curated PDF skills layout.
+    """
+    pool: List[str] = []
+    seen: set[str] = set()
+
+    def add_skill(s: str) -> None:
+        clean = (s or "").strip()
+        if not clean or len(clean) < 2:
+            return
+        lower = clean.lower()
+        if lower not in seen:
+            seen.add(lower)
+            pool.append(clean)
+
+    # 1. Curated skills
+    skills_map = master_profile.get("skills") or {}
+    if isinstance(skills_map, dict):
+        for val_list in skills_map.values():
+            if isinstance(val_list, list):
+                for skill in val_list:
+                    add_skill(str(skill))
+
+    # 2. Experience role tags & bullet terms
+    for role in master_profile.get("experience") or []:
+        if isinstance(role, dict):
+            for tag in role.get("tags") or []:
+                add_skill(str(tag))
+            for bullet in role.get("bullets") or []:
+                # Extract parenthesized technologies e.g. (CoffeeScript, Node), (AWS Kiro using Claude models)
+                for match in re.findall(r"\(([^)]+)\)", bullet):
+                    for part in re.split(r"[,;/]+|\busing\b|\bmodels\b", match, flags=re.I):
+                        cleaned_part = re.sub(r"^(?:and|with)\s+", "", part.strip(), flags=re.I).strip()
+                        if cleaned_part and len(cleaned_part) >= 2:
+                            add_skill(cleaned_part)
+                # Also extract named entities & acronyms
+                for term in extract_named_entities_and_terms(bullet):
+                    add_skill(term)
+
+    return pool
+
+
 class SingleBulletResponse(BaseModel):
     bullet: str = Field(...)
 
@@ -193,11 +243,13 @@ class JobSynthesizer:
         Generates structural evaluation: fit_score (1-10), matched_skills, missing_skills,
         and a concise 2-sentence fit_rationale.
         """
+        searchable_pool = extract_searchable_skill_pool(master_profile)
         system_prompt = (
             "You are a precise technical career evaluator. Return ONLY valid JSON matching "
             "keys: fit_score (float 1.0-10.0), matched_skills (list of strings), "
             "missing_skills (list of strings), fit_rationale (2 concise sentences), "
-            "extracted_salary (normalized pay range string like '$130,000 - $160,000/yr' or '$65 - $85/hr' if stated in job_description, or null if not mentioned)."
+            "extracted_salary (normalized pay range string like '$130,000 - $160,000/yr' or '$65 - $85/hr' if stated in job_description, or null if not mentioned). "
+            "NOTE: matched_skills should identify overlapping technologies from both candidate_skills and all_verified_technologies across their experience bullets."
         )
         user_prompt = json.dumps(
             {
@@ -205,6 +257,7 @@ class JobSynthesizer:
                 "company": job.company,
                 "job_description": job.description_text[:4500],
                 "candidate_skills": master_profile.get("skills", {}),
+                "all_verified_technologies": searchable_pool,
                 "candidate_experience": master_profile.get("experience", []),
                 "steering_notes": natural_language_notes,
             }

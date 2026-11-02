@@ -21,7 +21,7 @@ from worker.preflight import check_lm_studio_health, enforce_preflight_or_exit
 from worker.publisher import ArtifactPublisher
 from worker.ranker import SemanticRanker, is_eligible_remote_or_local
 from worker.schemas import JobEvaluationResult, ScrapedJob
-from worker.synthesizer import JobSynthesizer
+from worker.synthesizer import JobSynthesizer, extract_searchable_skill_pool
 from worker.typesetter import TypstTypesetter
 
 logging.basicConfig(
@@ -399,16 +399,11 @@ def run_nightly_batch(
             allow_remote=allow_remote,
         )
         basics = state["master_profile"].get("basics") or {}
-        skills_map = state["master_profile"].get("skills") or {}
-        flat_skills: List[str] = []
-        if isinstance(skills_map, dict):
-            for vals in skills_map.values():
-                if isinstance(vals, list):
-                    flat_skills.extend(str(v) for v in vals if v)
+        searchable_skills = extract_searchable_skill_pool(state["master_profile"])
         profile_summary_parts = [
             str(basics.get("title") or ""),
             str(basics.get("summary") or ""),
-            ", ".join(flat_skills),
+            ", ".join(searchable_skills),
         ]
         profile_summary = "\n".join(p for p in profile_summary_parts if p.strip()) or json.dumps(basics)
 
