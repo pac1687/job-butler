@@ -23,6 +23,7 @@ from worker.validator import (
     GuardrailValidator,
     contains_forbidden_term,
     extract_named_entities_and_terms,
+    merge_two_bullets,
 )
 
 logger = logging.getLogger(__name__)
@@ -249,8 +250,14 @@ class JobSynthesizer:
             (idx, bullet, cosine_similarity(job_vec, b_vec))
             for idx, (bullet, b_vec) in enumerate(zip(bullets, bullet_vecs))
         ]
-        # Order top `max_bullets` by semantic similarity descending so the strongest matching bullet is first
-        top_selected = sorted(scored, key=lambda item: item[2], reverse=True)[:max_bullets]
+        # Order top `max_bullets` by semantic similarity. The candidate's primary baseline accomplishment
+        # (idx == 0) retains a stability priority (+0.08) so a secondary subtask does not eclipse the core role function
+        # unless distinctly more relevant to the target job.
+        top_selected = sorted(
+            scored,
+            key=lambda item: item[2] + (0.08 if item[0] == 0 else 0.0),
+            reverse=True,
+        )[:max_bullets]
         return [item[1] for item in top_selected]
 
     def generate_tailored_headline(
@@ -546,6 +553,69 @@ class JobSynthesizer:
         )
         return outcome.final_bullet
 
+    def combine_bullets(
+        self,
+        source_bullets: Sequence[str],
+        role_title: str = "",
+        company: str = "",
+        job_title: str = "",
+        forbidden_terms: Sequence[str] = (),
+        protected_metrics: Sequence[str] = (),
+    ) -> str:
+        """
+        Synthesizes a single cohesive, high-impact resume bullet point from two source accomplishments.
+        Ensures the primary role function (from the first bullet) remains prominent while integrating
+        the secondary technical capabilities or project achievements.
+        """
+        valid_bullets = [b.strip() for b in source_bullets if b and b.strip()]
+        if not valid_bullets:
+            return ""
+        if len(valid_bullets) == 1:
+            return valid_bullets[0]
+
+        b1, b2 = valid_bullets[0], valid_bullets[1]
+
+        system_prompt = (
+            "You are an expert executive resume editor. Combine the candidate's two accomplishments "
+            f"from the role '{role_title}' at '{company}' into a single, cohesive, high-impact resume bullet point. "
+            "CRITICAL RULES: "
+            "1. Coherently merge both accomplishments so that the primary role function (from the first accomplishment) "
+            "remains clear and prominent while integrating the technical capabilities from the second accomplishment. "
+            "2. Keep all numbers, metrics, and named technologies verbatim (e.g., PGP, BestCrypt, rating systems). Do not invent tools or metrics. "
+            "3. The output MUST be a single grammatically complete sentence ending with a period (between 120 and 220 characters). "
+            f"4. NEVER include any of these forbidden terms: {list(forbidden_terms)}. "
+            'Return ONLY JSON: {"bullet": "..."}'
+        )
+        user_prompt = json.dumps(
+            {
+                "role": role_title,
+                "company": company,
+                "target_job_title": job_title,
+                "primary_accomplishment": b1,
+                "secondary_accomplishment": b2,
+            }
+        )
+        try:
+            data = self._chat_json(
+                system_prompt,
+                user_prompt,
+                max_tokens=1024,
+                schema_model=SingleBulletResponse,
+            )
+            candidate = str(data.get("bullet") or "").strip()
+        except Exception as exc:
+            logger.warning("combine_bullets LLM call failed (%s); using heuristic fallback.", exc)
+            candidate = merge_two_bullets(b1, b2)
+
+        outcome = self.validator.validate_combined_bullet(
+            b1=b1,
+            b2=b2,
+            generated_bullet=candidate,
+            forbidden_terms=forbidden_terms,
+            protected_metrics=protected_metrics,
+        )
+        return outcome.final_bullet
+
     def draft_cover_letter(
         self,
         job: ScrapedJob,
@@ -656,16 +726,35 @@ class JobSynthesizer:
                 )
                 for b in selected_bullets
             ]
-            tailored_experience.append(
-                {
-                    "role_id": role.get("role_id", ""),
-                    "company": role.get("company", ""),
-                    "title": role.get("title", ""),
-                    "location": role.get("location", "Remote"),
-                    "dates": role.get("dates", ""),
-                    "bullets": validated_bullets,
-                }
-            )
+
+            combined_bullet = None
+            if len(source_bullets) == 2:
+                combined_bullet = self.combine_bullets(
+                    source_bullets=source_bullets,
+                    role_title=role.get("title", ""),
+                    company=role.get("company", ""),
+                    job_title=job.title,
+                    forbidden_terms=forbidden_terms,
+                    protected_metrics=protected_metrics,
+                )
+
+            # If max_bullets is explicitly constrained to 1 for a 2-bullet role, use the combined bullet
+            if max_bullets == 1 and combined_bullet:
+                final_bullets = [combined_bullet]
+            else:
+                final_bullets = validated_bullets
+
+            role_entry: Dict[str, Any] = {
+                "role_id": role.get("role_id", ""),
+                "company": role.get("company", ""),
+                "title": role.get("title", ""),
+                "location": role.get("location", "Remote"),
+                "dates": role.get("dates", ""),
+                "bullets": final_bullets,
+            }
+            if combined_bullet:
+                role_entry["combined_bullet"] = combined_bullet
+            tailored_experience.append(role_entry)
 
         # 4. Tailored cover letter drafting
         cover_letter_paragraphs = self.draft_cover_letter(

@@ -237,6 +237,59 @@ def verify_context_and_entities_preserved(
     return True, None
 
 
+def merge_two_bullets(b1: str, b2: str) -> str:
+    """
+    Deterministically combines two bullet points into a single coherent sentence,
+    preserving the primary duty (first bullet) while integrating the secondary project (second bullet).
+    """
+    clean1 = (b1 or "").strip().rstrip(".")
+    clean2 = (b2 or "").strip().rstrip(".")
+    if not clean1:
+        return f"{clean2}." if clean2 else ""
+    if not clean2:
+        return f"{clean1}."
+
+    words2 = clean2.split()
+    first_word = words2[0]
+    first_lower = first_word.lower()
+
+    if first_lower.endswith("ing"):
+        participle = first_lower
+    else:
+        verb_map = {
+            "executed": "executing",
+            "delivered": "delivering",
+            "managed": "managing",
+            "supported": "supporting",
+            "trained": "training",
+            "built": "building",
+            "led": "leading",
+            "designed": "designing",
+            "implemented": "implementing",
+            "configured": "configuring",
+            "maintained": "maintaining",
+            "developed": "developing",
+            "created": "creating",
+            "engineered": "engineering",
+            "automated": "automating",
+            "provided": "providing",
+            "resolved": "resolving",
+            "performed": "performing",
+            "deployed": "deploying",
+            "established": "establishing",
+            "integrated": "integrating",
+        }
+        if first_lower in verb_map:
+            participle = verb_map[first_lower]
+        elif first_lower.endswith("ed"):
+            participle = first_lower[:-2] + "ing"
+        else:
+            participle = first_lower
+
+    merged_second = " ".join([participle] + words2[1:])
+    return f"{clean1}, while {merged_second}."
+
+
 def verify_complete_bullet(
     source_bullet: str,
     generated_bullet: str,
@@ -443,4 +496,75 @@ class GuardrailValidator:
             used_fallback=False,
             failure_reason=None,
             similarity_score=sim,
+        )
+
+    def validate_combined_bullet(
+        self,
+        b1: str,
+        b2: str,
+        generated_bullet: str,
+        forbidden_terms: Sequence[str] = (),
+        protected_metrics: Sequence[str] = (),
+        max_chars: int = 260,
+    ) -> BulletValidationOutcome:
+        """
+        Validates an LLM-synthesized combined bullet from two source accomplishments.
+        Checks completeness, forbidden terms, metric tokens, and named entities from both source bullets.
+        Falls back to deterministic merge_two_bullets(b1, b2) if validation fails.
+        """
+        candidate = (generated_bullet or "").strip()
+        fallback = merge_two_bullets(b1, b2)
+
+        if not candidate:
+            return BulletValidationOutcome(
+                final_bullet=fallback,
+                passed=False,
+                used_fallback=True,
+                failure_reason="Empty candidate bullet",
+            )
+
+        complete_ok, incomplete_reason = verify_complete_bullet(b1, candidate)
+        if not complete_ok:
+            return BulletValidationOutcome(
+                final_bullet=fallback,
+                passed=False,
+                used_fallback=True,
+                failure_reason=incomplete_reason,
+            )
+
+        if len(candidate) > max_chars:
+            return BulletValidationOutcome(
+                final_bullet=fallback,
+                passed=False,
+                used_fallback=True,
+                failure_reason=f"Combined bullet length {len(candidate)} exceeds {max_chars}",
+            )
+
+        violated_term = contains_forbidden_term(candidate, forbidden_terms)
+        if violated_term is not None:
+            return BulletValidationOutcome(
+                final_bullet=fallback,
+                passed=False,
+                used_fallback=True,
+                failure_reason=f"Forbidden term detected: '{violated_term}'",
+            )
+
+        combined_src = f"{b1} {b2}"
+        num_ok, num_reason = verify_numeric_tokens_unchanged(
+            combined_src, candidate, protected_metrics
+        )
+        if not num_ok:
+            return BulletValidationOutcome(
+                final_bullet=fallback,
+                passed=False,
+                used_fallback=True,
+                failure_reason=num_reason,
+            )
+
+        return BulletValidationOutcome(
+            final_bullet=candidate,
+            passed=True,
+            used_fallback=False,
+            failure_reason=None,
+            similarity_score=1.0,
         )

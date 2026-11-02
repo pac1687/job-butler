@@ -332,3 +332,85 @@ def test_build_tailored_payload_adaptive_hyphenation_and_title_sync() -> None:
     assert payload_b["basics"]["title"] == "Full-Stack Product Engineer"
     assert "Full-Stack Product Engineer" in payload_b["basics"]["summary"]
     assert "Full Stack" not in payload_b["basics"]["summary"]
+
+
+def test_combine_bullets_coherently_merges_two_accomplishments() -> None:
+    synthesizer = JobSynthesizer(ranker=FakeRanker())
+    b1 = "Delivered remote hardware and software technical support to field insurance agents and trained staff on proprietary rating systems."
+    b2 = "Executed endpoint disk encryption (PGP, BestCrypt) across field agent machines to safeguard sensitive policyholder data."
+
+    # Test LLM response
+    combined_llm = (
+        "Delivered remote hardware and software support on proprietary rating systems, "
+        "while executing endpoint disk encryption (PGP, BestCrypt) to safeguard sensitive data."
+    )
+    with patch.object(synthesizer, "_chat_json", return_value={"bullet": combined_llm}):
+        res = synthesizer.combine_bullets(
+            source_bullets=[b1, b2],
+            role_title="Help Desk Career Development Trainee",
+            company="ANPAC",
+            job_title="Software Engineer",
+        )
+        assert res == combined_llm
+        assert "Delivered remote" in res
+        assert "PGP" in res
+
+    # Test fallback merge when LLM call fails
+    with patch.object(synthesizer, "_chat_json", side_effect=RuntimeError("LLM offline")):
+        res_fallback = synthesizer.combine_bullets(
+            source_bullets=[b1, b2],
+            role_title="Help Desk Career Development Trainee",
+            company="ANPAC",
+            job_title="Software Engineer",
+        )
+        assert "Delivered remote hardware" in res_fallback
+        assert "proprietary rating systems, while executing endpoint disk encryption (PGP, BestCrypt)" in res_fallback
+
+
+def test_build_tailored_payload_attaches_combined_bullet_for_two_bullet_roles() -> None:
+    synthesizer = JobSynthesizer(ranker=FakeRanker())
+    eval_res = JobEvaluationResult(
+        fit_score=8.0,
+        matched_skills=["Support"],
+        missing_skills=[],
+        fit_rationale="Strong technical support alignment.",
+    )
+    master_profile = {
+        "basics": {"name": "Alex Rivera", "title": "Engineer", "summary": "Engineer summary."},
+        "skills": {"languages": ["Python"]},
+        "experience": [
+            {
+                "role_id": "anpac",
+                "company": "American National Property and Casualty (ANPAC)",
+                "title": "Help Desk Career Development Trainee",
+                "bullets": [
+                    "Delivered remote hardware and software technical support to field insurance agents and trained staff on proprietary rating systems.",
+                    "Executed endpoint disk encryption (PGP, BestCrypt) across field agent machines to safeguard sensitive policyholder data.",
+                ],
+            }
+        ],
+    }
+    job = ScrapedJob(
+        source="test",
+        source_id="c",
+        title="Support Engineer",
+        company="Tech",
+        location="Remote",
+        is_remote=True,
+        url="https://example.com/job_c",
+        content_hash="hash_c",
+        description_text="Technical support role.",
+    )
+
+    with patch.object(synthesizer, "_chat_json", side_effect=RuntimeError("use fallback")):
+        payload = synthesizer.build_tailored_payload(
+            job=job,
+            master_profile=master_profile,
+            tailoring_rules={"allow_rephrasing": False},
+            evaluation=eval_res,
+        )
+
+    role_out = payload["experience"][0]
+    assert "combined_bullet" in role_out
+    assert "Delivered remote hardware" in role_out["combined_bullet"]
+    assert "disk encryption" in role_out["combined_bullet"]

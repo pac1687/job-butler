@@ -156,3 +156,49 @@ def test_compile_template_raises_on_nonzero_exit(tmp_path: Path) -> None:
         with pytest.raises(TypstCompilationError, match="syntax error"):
             typesetter.compile_template("resume.typ", {}, tmp_path / "fail.pdf")
 
+
+def test_compile_resume_with_auto_trim_combines_two_bullets(tmp_path: Path) -> None:
+    payload = {
+        "basics": {"name": "Alex Rivera"},
+        "experience": [
+            {
+                "role_id": "anpac",
+                "company": "American National Property and Casualty (ANPAC)",
+                "title": "Help Desk Career Development Trainee",
+                "bullets": [
+                    "Delivered remote hardware and software technical support to field insurance agents and trained staff on proprietary rating systems.",
+                    "Executed endpoint disk encryption (PGP, BestCrypt) across field agent machines to safeguard sensitive policyholder data.",
+                ],
+                "combined_bullet": "Delivered remote hardware and software technical support to field insurance agents and trained staff on proprietary rating systems, while executing endpoint disk encryption (PGP, BestCrypt) across field agent machines to safeguard sensitive policyholder data.",
+            }
+        ],
+    }
+    typesetter = TypstTypesetter()
+    captured_payloads = []
+
+    def fake_run(cmd, **kwargs):
+        data_arg = [arg for arg in cmd if arg.startswith("data=")][0]
+        json_str = data_arg.split("data=", 1)[1]
+        import json
+
+        captured_payloads.append(json.loads(json_str))
+
+        out_arg = Path(cmd[-1])
+        pages = 2 if len(captured_payloads) == 1 else 1
+        _create_blank_pdf(out_arg, num_pages=pages)
+
+        class FakeResult:
+            returncode = 0
+            stderr = ""
+
+        return FakeResult()
+
+    with patch("worker.typesetter.subprocess.run", side_effect=fake_run):
+        typesetter.compile_resume_with_auto_trim(payload, tmp_path / "combined_resume.pdf")
+
+    assert len(captured_payloads) >= 2
+    trimmed_bullets = captured_payloads[1]["experience"][0]["bullets"]
+    assert len(trimmed_bullets) == 1
+    assert "Delivered remote hardware" in trimmed_bullets[0]
+    assert "disk encryption" in trimmed_bullets[0]
+

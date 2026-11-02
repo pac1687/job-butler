@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from pypdf import PdfReader
 
+from worker.validator import merge_two_bullets
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -124,18 +126,22 @@ class TypstTypesetter:
                     "Resume exceeded 1 page on attempt %d; adjusting layout/bullets to fit 1-page budget.",
                     attempt + 1,
                 )
-                # Step 1: First trim one trailing bullet from the oldest role with >1 bullet
+                # Step 1: First reduce one bullet from the oldest role with >1 bullet.
+                # If a role has 2 bullets, combine them coherently instead of dropping half the role experience.
                 trimmed_bullet = False
                 for role in reversed(working_payload.get("experience", [])):
                     bullets = role.get("bullets") or []
                     if len(bullets) > 1:
-                        role["bullets"] = bullets[:-1]
+                        if len(bullets) == 2:
+                            role["bullets"] = [role.get("combined_bullet") or merge_two_bullets(bullets[0], bullets[1])]
+                        else:
+                            role["bullets"] = bullets[:-1]
                         trimmed_bullet = True
                         break
 
                 # Step 2: Escalate compact_level (tighter font & margins) as attempts progress
                 current_compact = int(working_payload.get("compact_level") or 0)
-                if attempt >= 1 and current_compact < 2:
+                if current_compact < 2:
                     working_payload["compact_level"] = current_compact + 1
 
                 # Step 3: If all roles are down to 1 bullet and still >1 page, drop oldest role or trim summary

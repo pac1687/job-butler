@@ -221,3 +221,37 @@ def test_validator_rejects_bullet_exceeding_170_chars() -> None:
     assert outcome.used_fallback is True
     assert outcome.final_bullet == source
     assert extract_numeric_tokens("25% and 42.5") == {"25%", "42.5"}
+
+
+def test_merge_two_bullets_combines_primary_and_secondary_coherently() -> None:
+    from worker.validator import merge_two_bullets
+
+    b1 = "Delivered remote hardware and software technical support to field insurance agents and trained staff on proprietary rating systems."
+    b2 = "Executed endpoint disk encryption (PGP, BestCrypt) across field agent machines to safeguard sensitive policyholder data."
+
+    merged = merge_two_bullets(b1, b2)
+    assert "Delivered remote hardware" in merged
+    assert "proprietary rating systems, while executing endpoint disk encryption (PGP, BestCrypt)" in merged
+    assert merged.endswith(".")
+
+
+def test_validator_validate_combined_bullet_accepts_valid_and_catches_forbidden() -> None:
+    validator = GuardrailValidator(embed_fn=_high_sim_embed)
+    b1 = "Delivered remote hardware and software technical support to field insurance agents and trained staff on proprietary rating systems."
+    b2 = "Executed endpoint disk encryption (PGP, BestCrypt) across field agent machines to safeguard sensitive policyholder data."
+
+    candidate = (
+        "Delivered remote hardware/software support to field agents on proprietary rating systems, "
+        "while executing endpoint disk encryption (PGP, BestCrypt) to safeguard policyholder data."
+    )
+    outcome = validator.validate_combined_bullet(b1, b2, candidate)
+    assert outcome.passed is True
+    assert outcome.final_bullet == candidate
+
+    # Rejects forbidden terms in combined bullet
+    outcome_forbidden = validator.validate_combined_bullet(
+        b1, b2, candidate, forbidden_terms=["PGP"]
+    )
+    assert outcome_forbidden.passed is False
+    assert outcome_forbidden.used_fallback is True
+    assert "Delivered remote hardware" in outcome_forbidden.final_bullet
