@@ -91,11 +91,14 @@ export function getPreferredWorkerNodeId(): string | null {
 }
 
 export function withWorkerAffinity(
-  payload: Record<string, unknown> = {}
+  payload: Record<string, unknown> = {},
+  fallbackWorkerId?: string | null
 ): Record<string, unknown> {
   const targetWorker =
     typeof payload.target_worker === "string" && payload.target_worker.trim()
       ? payload.target_worker.trim()
+      : typeof fallbackWorkerId === "string" && fallbackWorkerId.trim()
+      ? fallbackWorkerId.trim()
       : getPreferredWorkerNodeId();
   if (!targetWorker) {
     return payload;

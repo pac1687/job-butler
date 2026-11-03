@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { signIn, signOut } from "@/auth";
+import { ActiveWorkerBadge } from "@/components/ActiveWorkerBadge";
 
 interface NavbarProps {
   isAuthenticatedAdmin?: boolean;
@@ -44,6 +45,7 @@ export function Navbar({ isAuthenticatedAdmin = false, userEmail }: NavbarProps)
         </div>
 
         <div className="flex items-center gap-3">
+          <ActiveWorkerBadge />
           {isAuthenticatedAdmin ? (
             <div className="flex items-center gap-3">
               <span className="text-xs text-slate-400 hidden md:inline">

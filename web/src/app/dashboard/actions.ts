@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { cookies } from "next/headers";
 import { auth, isAuthorizedAdminEmail } from "@/auth";
 import { getSql, withWorkerAffinity, type MatchStatus } from "@/lib/db";
 import { deleteStorageKeysFromR2 } from "@/lib/r2";
@@ -20,22 +21,28 @@ export async function updateMatchStatusAction(matchId: string, status: MatchStat
   revalidatePath("/dashboard");
 }
 
-export async function enqueueJobUrlAction(url: string) {
+export async function enqueueJobUrlAction(url: string): Promise<{ taskId: string }> {
   const session = await auth();
   if (!isAuthorizedAdminEmail(session?.user?.email)) {
     throw new Error("Unauthorized");
   }
 
   const sql = getSql();
-  const payload = withWorkerAffinity({ url });
-  await sql`
+  const cookieStore = cookies();
+  const cookieWorker = cookieStore.get("worker_node_id")?.value;
+  const payload = withWorkerAffinity({ url }, cookieWorker);
+  const rows = await sql`
     INSERT INTO job_task_queue (task_type, payload, status)
     VALUES ('EVALUATE_URL', ${JSON.stringify(payload)}::jsonb, 'PENDING')
+    RETURNING id
   `;
   revalidatePath("/dashboard");
+  return { taskId: String(rows[0]?.id || "") };
 }
 
-export async function enqueueBatchDiscoveryAction(maxJobs: number = 10) {
+export async function enqueueBatchDiscoveryAction(
+  maxJobs: number = 10
+): Promise<{ taskId: string }> {
   const session = await auth();
   if (!isAuthorizedAdminEmail(session?.user?.email)) {
     throw new Error("Unauthorized");
@@ -43,18 +50,27 @@ export async function enqueueBatchDiscoveryAction(maxJobs: number = 10) {
 
   const clampedMaxJobs = Math.min(50, Math.max(1, Math.floor(Number(maxJobs) || 10)));
   const sql = getSql();
-  const payload = withWorkerAffinity({
-    mode: "BATCH_DISCOVERY",
-    max_jobs: clampedMaxJobs,
-  });
-  await sql`
+  const cookieStore = cookies();
+  const cookieWorker = cookieStore.get("worker_node_id")?.value;
+  const payload = withWorkerAffinity(
+    {
+      mode: "BATCH_DISCOVERY",
+      max_jobs: clampedMaxJobs,
+    },
+    cookieWorker
+  );
+  const rows = await sql`
     INSERT INTO job_task_queue (task_type, payload, status)
     VALUES ('EVALUATE_URL', ${JSON.stringify(payload)}::jsonb, 'PENDING')
+    RETURNING id
   `;
   revalidatePath("/dashboard");
+  return { taskId: String(rows[0]?.id || "") };
 }
 
-export async function enqueueBatchTailorAction(jobIds: string[]) {
+export async function enqueueBatchTailorAction(
+  jobIds: string[]
+): Promise<{ taskIds: string[] }> {
   const session = await auth();
   if (!isAuthorizedAdminEmail(session?.user?.email)) {
     throw new Error("Unauthorized");
@@ -64,18 +80,27 @@ export async function enqueueBatchTailorAction(jobIds: string[]) {
     new Set(jobIds.map((id) => id.trim()).filter(Boolean))
   ).slice(0, 25);
   if (uniqueJobIds.length === 0) {
-    return;
+    return { taskIds: [] };
   }
 
   const sql = getSql();
-  const payloadJson = JSON.stringify(withWorkerAffinity({}));
+  const cookieStore = cookies();
+  const cookieWorker = cookieStore.get("worker_node_id")?.value;
+  const payloadJson = JSON.stringify(withWorkerAffinity({}, cookieWorker));
+  const taskIds: string[] = [];
+
   for (const jobId of uniqueJobIds) {
-    await sql`
+    const rows = await sql`
       INSERT INTO job_task_queue (job_id, task_type, payload, status)
       VALUES (${jobId}::uuid, 'REGENERATE_RESUME', ${payloadJson}::jsonb, 'PENDING')
+      RETURNING id
     `;
+    if (rows[0]?.id) {
+      taskIds.push(String(rows[0].id));
+    }
   }
   revalidatePath("/dashboard");
+  return { taskIds };
 }
 
 export async function deleteMatchesAction(matchIds: string[]) {

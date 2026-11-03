@@ -1,15 +1,16 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import type { EvaluatedJobMatch, MatchStatus } from "@/lib/db";
 
 interface JobMatchFeedProps {
   initialMatches: EvaluatedJobMatch[];
   readOnly?: boolean;
   onUpdateStatus?: (matchId: string, status: MatchStatus) => Promise<void>;
-  onEnqueueUrl?: (url: string) => Promise<void>;
-  onRunBatchDiscovery?: (maxJobs: number) => Promise<void>;
-  onBatchTailorJobs?: (jobIds: string[]) => Promise<void>;
+  onEnqueueUrl?: (url: string) => Promise<{ taskId?: string } | void>;
+  onRunBatchDiscovery?: (maxJobs: number) => Promise<{ taskId?: string } | void>;
+  onBatchTailorJobs?: (jobIds: string[]) => Promise<{ taskIds?: string[] } | void>;
   onDeleteMatches?: (matchIds: string[]) => Promise<void>;
 }
 
@@ -109,6 +110,87 @@ export function JobMatchFeed({
   const [activeFilter, setActiveFilter] = useState<string>(
     readOnly ? "ALL" : "NEW_24H"
   );
+  const [pdfOnlyFilter, setPdfOnlyFilter] = useState<boolean>(false);
+
+  // Restore filter selection and PDF toggle from localStorage on mount (e.g. staying on 'SAVED')
+  useEffect(() => {
+    if (readOnly) return;
+    try {
+      const saved = localStorage.getItem("job_butler_active_filter");
+      if (
+        saved &&
+        (saved === "ALL" ||
+          saved === "NEW_24H" ||
+          STATUS_OPTIONS.includes(saved as MatchStatus))
+      ) {
+        setActiveFilter(saved);
+      }
+      const savedPdfOnly = localStorage.getItem("job_butler_pdf_only");
+      if (savedPdfOnly === "true") {
+        setPdfOnlyFilter(true);
+      }
+    } catch {}
+  }, [readOnly]);
+
+  function handleFilterSelect(nextFilter: string) {
+    setActiveFilter(nextFilter);
+    try {
+      localStorage.setItem("job_butler_active_filter", nextFilter);
+    } catch {}
+  }
+
+  function togglePdfOnlyFilter() {
+    setPdfOnlyFilter((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("job_butler_pdf_only", String(next));
+      } catch {}
+      addToast(
+        next
+          ? "Filtered to roles with Tailored PDFs ready"
+          : "Showing all roles in current filter",
+        "info"
+      );
+      return next;
+    });
+  }
+
+  // Viewport-fixed floating toast notification state
+  const [toasts, setToasts] = useState<
+    Array<{
+      id: string;
+      type: "loading" | "success" | "info" | "error";
+      message: string;
+    }>
+  >([]);
+
+  const addToast = (
+    message: string,
+    type: "loading" | "success" | "info" | "error" = "info",
+    id?: string
+  ) => {
+    const toastId = id || Math.random().toString(36).substring(2, 9);
+    setToasts((prev) => {
+      const existing = prev.findIndex((t) => t.id === toastId);
+      if (existing >= 0) {
+        const copy = [...prev];
+        copy[existing] = { id: toastId, type, message };
+        return copy;
+      }
+      return [...prev, { id: toastId, type, message }];
+    });
+
+    if (type !== "loading") {
+      setTimeout(() => {
+        setToasts((prev) => prev.filter((t) => t.id !== toastId));
+      }, 5000);
+    }
+    return toastId;
+  };
+
+  const removeToast = (id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  };
   const [snapshotModalMatch, setSnapshotModalMatch] = useState<EvaluatedJobMatch | null>(null);
   const [showQueueModal, setShowQueueModal] = useState(false);
   const [customUrl, setCustomUrl] = useState("");
@@ -122,19 +204,135 @@ export function JobMatchFeed({
   const [tailoringBatch, setTailoringBatch] = useState(false);
   const [deletingMatches, setDeletingMatches] = useState(false);
   const [loadingArtifactId, setLoadingArtifactId] = useState<string | null>(null);
+  const router = useRouter();
+  const [trackedTaskIds, setTrackedTaskIds] = useState<string[]>([]);
+
+  // Sync state whenever server re-renders initialMatches
+  useEffect(() => {
+    setMatches(initialMatches);
+  }, [initialMatches]);
+
+  // On mount, check if there are tasks currently pending/processing in Neon
+  useEffect(() => {
+    let mounted = true;
+    async function checkActiveTasks() {
+      try {
+        const res = await fetch("/api/tasks?active=true");
+        if (!res.ok) return;
+        const data = await res.json();
+        const activeTasks: Array<{ id: string; job_id?: string; task_type: string }> =
+          data.tasks || [];
+        if (mounted && activeTasks.length > 0) {
+          const ids = activeTasks.map((t) => t.id);
+          setTrackedTaskIds((prev) => Array.from(new Set([...prev, ...ids])));
+
+          const activeJobIds = activeTasks
+            .filter((t) => t.task_type === "REGENERATE_RESUME" && t.job_id)
+            .map((t) => String(t.job_id));
+          if (activeJobIds.length > 0) {
+            setQueuedTailorJobIds((prev) =>
+              Array.from(new Set([...prev, ...activeJobIds]))
+            );
+          }
+        }
+      } catch {}
+    }
+    checkActiveTasks();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  // Targeted active poller: only runs when tasks are actively tracked
+  useEffect(() => {
+    if (trackedTaskIds.length === 0) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/tasks?ids=${trackedTaskIds.join(",")}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const tasks: Array<{
+          id: string;
+          job_id?: string;
+          status: string;
+          task_type: string;
+          error_message?: string;
+        }> = data.tasks || [];
+
+        const finished = tasks.filter(
+          (t) => t.status === "COMPLETED" || t.status === "FAILED"
+        );
+
+        if (finished.length > 0) {
+          const finishedIds = new Set(finished.map((t) => t.id));
+          const finishedJobIds = finished
+            .map((t) => t.job_id)
+            .filter(Boolean) as string[];
+
+          if (finishedJobIds.length > 0) {
+            setQueuedTailorJobIds((prev) =>
+              prev.filter((id) => !finishedJobIds.includes(id))
+            );
+          }
+
+          setTrackedTaskIds((prev) =>
+            prev.filter((id) => !finishedIds.has(id))
+          );
+
+          // Refresh the page server data (re-queries Neon and updates initialMatches)
+          router.refresh();
+
+          const completedCount = finished.filter(
+            (t) => t.status === "COMPLETED"
+          ).length;
+          const failedCount = finished.filter(
+            (t) => t.status === "FAILED"
+          ).length;
+
+          if (completedCount > 0) {
+            const msg = `✓ Local worker finished processing (${completedCount} role(s) ready)! Feed refreshed.`;
+            setDiscoveryNotice(msg);
+            addToast(msg, "success", "tailor-job");
+          } else if (failedCount > 0) {
+            const msg = `Task finished with an error. Check local worker logs.`;
+            setDiscoveryNotice(msg);
+            addToast(msg, "error", "tailor-job");
+          }
+        }
+      } catch {
+        // Non-fatal, retries on next tick
+      }
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [trackedTaskIds, router]);
 
   const fresh24hCount = matches.filter(
     (m) => m.status === "NEW_MATCH" && isPostedWithinLast24Hours(m)
   ).length;
 
+  const totalPdfReadyCount = matches.filter(
+    (m) => Boolean(m.resume_storage_key) && m.status !== "ARCHIVED"
+  ).length;
+
   const filteredMatches = matches.filter((m) => {
+    let statusMatch = false;
     if (activeFilter === "ALL") {
-      return m.status !== "ARCHIVED";
+      statusMatch = m.status !== "ARCHIVED";
+    } else if (activeFilter === "NEW_24H") {
+      statusMatch = m.status === "NEW_MATCH" && isPostedWithinLast24Hours(m);
+    } else {
+      statusMatch = m.status === activeFilter;
     }
-    if (activeFilter === "NEW_24H") {
-      return m.status === "NEW_MATCH" && isPostedWithinLast24Hours(m);
+
+    if (!statusMatch) return false;
+
+    if (pdfOnlyFilter && !m.resume_storage_key) {
+      return false;
     }
-    return m.status === activeFilter;
+
+    return true;
   });
 
   async function handleStatusChange(matchId: string, nextStatus: MatchStatus) {
@@ -142,6 +340,7 @@ export function JobMatchFeed({
     setMatches((prev) =>
       prev.map((m) => (m.id === matchId ? { ...m, status: nextStatus } : m))
     );
+    addToast(`Stage updated to ${nextStatus.replace("_", " ")}`, "info");
     if (onUpdateStatus) {
       await onUpdateStatus(matchId, nextStatus);
     }
@@ -170,10 +369,14 @@ export function JobMatchFeed({
     e.preventDefault();
     if (!customUrl.trim() || readOnly) return;
     setQueueMessage("Enqueuing URL for local Docker worker evaluation...");
+    let newTaskId: string | null = null;
     if (onEnqueueUrl) {
-      await onEnqueueUrl(customUrl.trim());
+      const res = await onEnqueueUrl(customUrl.trim());
+      if (res && typeof res === "object" && "taskId" in res && res.taskId) {
+        newTaskId = res.taskId;
+      }
     } else {
-      await fetch("/api/tasks", {
+      const res = await fetch("/api/tasks", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -181,11 +384,19 @@ export function JobMatchFeed({
           payload: { url: customUrl.trim() },
         }),
       });
+      const data = await res.json();
+      if (data?.task?.id) {
+        newTaskId = data.task.id;
+      }
+    }
+    if (newTaskId) {
+      setTrackedTaskIds((prev) => Array.from(new Set([...prev, newTaskId!])));
     }
     setCustomUrl("");
-    setQueueMessage(
-      "Queued! The local worker will scrape, score, and compile a 1-page PDF on next poll."
-    );
+    const msg =
+      "URL queued! Worker is scraping & scoring; feed will auto-refresh on completion.";
+    setQueueMessage(msg);
+    addToast(msg, "loading", "evaluate-url");
   }
 
   async function handleRunBatchDiscovery() {
@@ -193,10 +404,14 @@ export function JobMatchFeed({
     try {
       setRunningDiscovery(true);
       setDiscoveryNotice(`Enqueuing batch job discovery scrape (up to ${batchMaxJobs} jobs)...`);
+      let newTaskId: string | null = null;
       if (onRunBatchDiscovery) {
-        await onRunBatchDiscovery(batchMaxJobs);
+        const res = await onRunBatchDiscovery(batchMaxJobs);
+        if (res && typeof res === "object" && "taskId" in res && res.taskId) {
+          newTaskId = res.taskId;
+        }
       } else {
-        await fetch("/api/tasks", {
+        const res = await fetch("/api/tasks", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -204,10 +419,17 @@ export function JobMatchFeed({
             payload: { mode: "BATCH_DISCOVERY", max_jobs: batchMaxJobs },
           }),
         });
+        const data = await res.json();
+        if (data?.task?.id) {
+          newTaskId = data.task.id;
+        }
       }
-      setDiscoveryNotice(
-        `Discovery scrape queued (max ${batchMaxJobs} jobs across diverse companies)! Your local queue-listener will scrape, filter by location/remote, and score fit without generating PDFs yet.`
-      );
+      if (newTaskId) {
+        setTrackedTaskIds((prev) => Array.from(new Set([...prev, newTaskId!])));
+      }
+      const noticeMsg = `Discovery scrape queued (max ${batchMaxJobs} jobs)! Local worker is evaluating roles; feed will auto-refresh on completion.`;
+      setDiscoveryNotice(noticeMsg);
+      addToast(noticeMsg, "loading", "batch-discovery");
     } finally {
       setRunningDiscovery(false);
     }
@@ -275,9 +497,9 @@ export function JobMatchFeed({
       if (onDeleteMatches) {
         await onDeleteMatches(matchIds);
       }
-      setDiscoveryNotice(
-        `Deleted ${matchIds.length} job card(s) and purged any associated PDFs/snapshots from Neon Object Storage.`
-      );
+      const deleteMsg = `Deleted ${matchIds.length} job card(s) and purged associated PDFs from storage.`;
+      setDiscoveryNotice(deleteMsg);
+      addToast(deleteMsg, "info");
     } finally {
       setDeletingMatches(false);
     }
@@ -290,11 +512,15 @@ export function JobMatchFeed({
       setDiscoveryNotice(
         `Enqueuing ${jobIds.length} selected role(s) for Resume & Cover Letter PDF generation...`
       );
+      const newIds: string[] = [];
       if (onBatchTailorJobs) {
-        await onBatchTailorJobs(jobIds);
+        const res = await onBatchTailorJobs(jobIds);
+        if (res && typeof res === "object" && "taskIds" in res && Array.isArray(res.taskIds)) {
+          newIds.push(...res.taskIds);
+        }
       } else {
         for (const jobId of jobIds) {
-          await fetch("/api/tasks", {
+          const res = await fetch("/api/tasks", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -303,13 +529,20 @@ export function JobMatchFeed({
               payload: {},
             }),
           });
+          const data = await res.json();
+          if (data?.task?.id) {
+            newIds.push(data.task.id);
+          }
         }
+      }
+      if (newIds.length > 0) {
+        setTrackedTaskIds((prev) => Array.from(new Set([...prev, ...newIds])));
       }
       setQueuedTailorJobIds((prev) => Array.from(new Set([...prev, ...jobIds])));
       setSelectedJobIds((prev) => prev.filter((id) => !jobIds.includes(id)));
-      setDiscoveryNotice(
-        `Queued ${jobIds.length} role(s) for 1-page Typst Resume & Cover Letter PDF compilation! Refresh in ~35s per role as your local worker completes them.`
-      );
+      const tailorMsg = `Queued ${jobIds.length} role(s) for 1-page Typst Resume & Cover Letter compilation! Feed will auto-refresh as your worker completes them.`;
+      setDiscoveryNotice(tailorMsg);
+      addToast(tailorMsg, "loading", "tailor-job");
     } finally {
       setTailoringBatch(false);
     }
@@ -409,7 +642,7 @@ export function JobMatchFeed({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2">
             <button
-              onClick={() => setActiveFilter("ALL")}
+              onClick={() => handleFilterSelect("ALL")}
               className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
                 activeFilter === "ALL"
                   ? "bg-emerald-500 text-slate-950"
@@ -419,7 +652,7 @@ export function JobMatchFeed({
               ALL
             </button>
             <button
-              onClick={() => setActiveFilter("NEW_24H")}
+              onClick={() => handleFilterSelect("NEW_24H")}
               className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
                 activeFilter === "NEW_24H"
                   ? "bg-amber-400 text-slate-950"
@@ -431,7 +664,7 @@ export function JobMatchFeed({
             {STATUS_OPTIONS.map((status) => (
               <button
                 key={status}
-                onClick={() => setActiveFilter(status)}
+                onClick={() => handleFilterSelect(status)}
                 className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
                   activeFilter === status
                     ? "bg-emerald-500 text-slate-950"
@@ -441,9 +674,28 @@ export function JobMatchFeed({
                 {status.replace("_", " ")}
               </button>
             ))}
+
+            <div className="h-4 w-px bg-slate-700/80 mx-1 hidden sm:block" />
+
+            {/* Additive PDF Ready Toggle */}
+            <button
+              onClick={togglePdfOnlyFilter}
+              title="Toggle to show only jobs with PDFs ready in current view"
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition ${
+                pdfOnlyFilter
+                  ? "bg-indigo-600 text-white shadow-md shadow-indigo-900/40 border border-indigo-400"
+                  : "bg-indigo-950/50 text-indigo-300 border border-indigo-800/60 hover:bg-indigo-900/60"
+              }`}
+            >
+              <span className={pdfOnlyFilter ? "text-white" : "text-indigo-400 font-bold"}>
+                ✓
+              </span>
+              PDFs Ready Only ({totalPdfReadyCount})
+            </button>
           </div>
           <span className="text-xs text-slate-400">
             Showing {filteredMatches.length} of {matches.length} job{matches.length === 1 ? "" : "s"}
+            {pdfOnlyFilter && " (PDFs only)"}
           </span>
         </div>
 
@@ -857,6 +1109,46 @@ export function JobMatchFeed({
           </div>
         </div>
       )}
+      {/* Viewport-Fixed Floating Toast Stack (visible anywhere on screen) */}
+      <div className="fixed bottom-5 right-5 z-50 flex flex-col gap-2.5 max-w-sm w-full pointer-events-none px-3 sm:px-0">
+        {toasts.map((toast) => (
+          <div
+            key={toast.id}
+            className={`pointer-events-auto flex items-start justify-between gap-3 p-3.5 rounded-xl border shadow-2xl backdrop-blur-md transition-all duration-300 animate-in slide-in-from-bottom-3 ${
+              toast.type === "loading"
+                ? "bg-amber-950/95 border-amber-700/80 text-amber-200"
+                : toast.type === "success"
+                ? "bg-emerald-950/95 border-emerald-700/80 text-emerald-200"
+                : toast.type === "error"
+                ? "bg-rose-950/95 border-rose-700/80 text-rose-200"
+                : "bg-slate-900/95 border-slate-700 text-slate-200"
+            }`}
+          >
+            <div className="flex items-center gap-2.5 text-xs font-medium">
+              {toast.type === "loading" && (
+                <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse flex-shrink-0" />
+              )}
+              {toast.type === "success" && (
+                <span className="text-emerald-400 font-bold text-sm flex-shrink-0">✓</span>
+              )}
+              {toast.type === "error" && (
+                <span className="text-rose-400 font-bold text-sm flex-shrink-0">✕</span>
+              )}
+              {toast.type === "info" && (
+                <span className="text-sky-400 font-bold text-sm flex-shrink-0">ℹ</span>
+              )}
+              <span className="leading-snug">{toast.message}</span>
+            </div>
+            <button
+              onClick={() => removeToast(toast.id)}
+              className="text-slate-400 hover:text-white text-xs font-bold ml-2 flex-shrink-0"
+              aria-label="Close notification"
+            >
+              ✕
+            </button>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import type {
   JobPreferencesRecord,
   MasterProfileRecord,
@@ -100,6 +101,39 @@ export function ProfileEditorClient({
     { skill: string; category: string; enabled: boolean }[] | null
   >(null);
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
+  const router = useRouter();
+  const [parsingTaskId, setParsingTaskId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!parsingTaskId) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/tasks?ids=${parsingTaskId}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const task = (data.tasks || [])[0];
+        if (!task) return;
+
+        if (task.status === "COMPLETED") {
+          setStatusBanner(
+            "✓ Master resume successfully parsed and updated by local worker!"
+          );
+          setParsingTaskId(null);
+          router.refresh();
+        } else if (task.status === "FAILED") {
+          setStatusBanner(
+            `Resume parsing failed: ${task.error_message || "worker error"}`
+          );
+          setParsingTaskId(null);
+        }
+      } catch {
+        // Retry on next interval
+      }
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [parsingTaskId, router]);
 
   async function handleSavePreferences(e: React.FormEvent) {
     e.preventDefault();
@@ -390,9 +424,31 @@ export function ProfileEditorClient({
       )}
 
       {statusBanner && (
-        <div className="bg-emerald-950/60 border border-emerald-800 rounded-xl p-3 text-xs text-emerald-300">
-          {statusBanner}
-        </div>
+        <>
+          <div className="bg-emerald-950/60 border border-emerald-800 rounded-xl p-3 text-xs text-emerald-300 flex items-center justify-between">
+            <span>{statusBanner}</span>
+            <button
+              onClick={() => setStatusBanner(null)}
+              className="text-emerald-400 hover:text-white text-xs ml-2"
+            >
+              ✕
+            </button>
+          </div>
+          <div className="fixed bottom-5 right-5 z-50 max-w-sm w-full pointer-events-none px-3 sm:px-0">
+            <div className="pointer-events-auto flex items-start justify-between gap-3 p-3.5 rounded-xl border border-emerald-700/80 bg-emerald-950/95 text-emerald-200 shadow-2xl backdrop-blur-md animate-in slide-in-from-bottom-3">
+              <div className="flex items-center gap-2.5 text-xs font-medium">
+                <span className="text-emerald-400 font-bold text-sm flex-shrink-0">✓</span>
+                <span className="leading-snug">{statusBanner}</span>
+              </div>
+              <button
+                onClick={() => setStatusBanner(null)}
+                className="text-slate-400 hover:text-white text-xs font-bold ml-2 flex-shrink-0"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        </>
       )}
 
       {/* 1. Resume PDF / DOCX Ingestion */}
@@ -405,10 +461,17 @@ export function ProfileEditorClient({
         </p>
         <form
           action={async (formData) => {
-            await uploadAndEnqueueMasterResumeAction(formData);
-            setStatusBanner(
-              "Uploaded resume and enqueued PARSE_MASTER_RESUME task for local worker."
-            );
+            const res = await uploadAndEnqueueMasterResumeAction(formData);
+            if (res?.taskId) {
+              setParsingTaskId(res.taskId);
+              setStatusBanner(
+                "Uploaded resume! Local worker is parsing via LM Studio..."
+              );
+            } else {
+              setStatusBanner(
+                "Uploaded resume and enqueued PARSE_MASTER_RESUME task for local worker."
+              );
+            }
           }}
           className="flex flex-wrap items-center gap-4"
         >

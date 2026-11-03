@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { cookies } from "next/headers";
 import { auth, isAuthorizedAdminEmail } from "@/auth";
 import { getSql, withWorkerAffinity } from "@/lib/db";
 
@@ -43,20 +44,27 @@ export async function uploadAndEnqueueMasterResumeAction(formData: FormData) {
   }
 
   const sql = getSql();
-  const taskPayload = withWorkerAffinity({
-    filename: file.name,
-    raw_text: extractedText,
-    file_base64: fileBase64,
-  });
-  await sql`
+  const cookieStore = cookies();
+  const cookieWorker = cookieStore.get("worker_node_id")?.value;
+  const taskPayload = withWorkerAffinity(
+    {
+      filename: file.name,
+      raw_text: extractedText,
+      file_base64: fileBase64,
+    },
+    cookieWorker
+  );
+  const rows = await sql`
     INSERT INTO job_task_queue (task_type, payload, status)
     VALUES (
       'PARSE_MASTER_RESUME',
       ${JSON.stringify(taskPayload)}::jsonb,
       'PENDING'
     )
+    RETURNING id
   `;
   revalidatePath("/profile");
+  return { taskId: String(rows[0]?.id || "") };
 }
 
 export async function updateTailoringRulesAction(payload: {
