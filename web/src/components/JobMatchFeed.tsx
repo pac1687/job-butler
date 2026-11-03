@@ -111,8 +111,9 @@ export function JobMatchFeed({
     readOnly ? "ALL" : "NEW_24H"
   );
   const [pdfOnlyFilter, setPdfOnlyFilter] = useState<boolean>(false);
+  const [remoteOnlyFilter, setRemoteOnlyFilter] = useState<boolean>(false);
 
-  // Restore filter selection and PDF toggle from localStorage on mount (e.g. staying on 'SAVED')
+  // Restore filter selection and toggles from localStorage on mount (e.g. staying on 'SAVED')
   useEffect(() => {
     if (readOnly) return;
     try {
@@ -128,6 +129,10 @@ export function JobMatchFeed({
       const savedPdfOnly = localStorage.getItem("job_butler_pdf_only");
       if (savedPdfOnly === "true") {
         setPdfOnlyFilter(true);
+      }
+      const savedRemoteOnly = localStorage.getItem("job_butler_remote_only");
+      if (savedRemoteOnly === "true") {
+        setRemoteOnlyFilter(true);
       }
     } catch {}
   }, [readOnly]);
@@ -149,6 +154,22 @@ export function JobMatchFeed({
         next
           ? "Filtered to roles with Tailored PDFs ready"
           : "Showing all roles in current filter",
+        "info"
+      );
+      return next;
+    });
+  }
+
+  function toggleRemoteOnlyFilter() {
+    setRemoteOnlyFilter((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("job_butler_remote_only", String(next));
+      } catch {}
+      addToast(
+        next
+          ? "Filtered to Remote roles only"
+          : "Showing Remote and On-Site/Hybrid roles",
         "info"
       );
       return next;
@@ -305,12 +326,19 @@ export function JobMatchFeed({
     return () => clearInterval(interval);
   }, [trackedTaskIds, router]);
 
+  const isJobRemote = (m: EvaluatedJobMatch) =>
+    Boolean(m.is_remote || (m.location && /remote/i.test(m.location)));
+
   const fresh24hCount = matches.filter(
     (m) => m.status === "NEW_MATCH" && isPostedWithinLast24Hours(m)
   ).length;
 
   const totalPdfReadyCount = matches.filter(
     (m) => Boolean(m.resume_storage_key) && m.status !== "ARCHIVED"
+  ).length;
+
+  const totalRemoteCount = matches.filter(
+    (m) => isJobRemote(m) && m.status !== "ARCHIVED"
   ).length;
 
   const filteredMatches = matches.filter((m) => {
@@ -326,6 +354,10 @@ export function JobMatchFeed({
     if (!statusMatch) return false;
 
     if (pdfOnlyFilter && !m.resume_storage_key) {
+      return false;
+    }
+
+    if (remoteOnlyFilter && !isJobRemote(m)) {
       return false;
     }
 
@@ -668,12 +700,34 @@ export function JobMatchFeed({
               <span className={pdfOnlyFilter ? "text-white" : "text-indigo-400 font-bold"}>
                 ✓
               </span>
-              PDFs Ready Only ({totalPdfReadyCount})
+              PDFs Ready ({totalPdfReadyCount})
+            </button>
+
+            {/* Additive Remote Only Toggle */}
+            <button
+              onClick={toggleRemoteOnlyFilter}
+              title="Toggle to show only Remote jobs in current view"
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition ${
+                remoteOnlyFilter
+                  ? "bg-emerald-600 text-white shadow-md shadow-emerald-900/40 border border-emerald-400"
+                  : "bg-emerald-950/50 text-emerald-300 border border-emerald-800/60 hover:bg-emerald-900/60"
+              }`}
+            >
+              <span className={remoteOnlyFilter ? "text-white" : "text-emerald-400 font-bold"}>
+                🌐
+              </span>
+              Remote ({totalRemoteCount})
             </button>
           </div>
           <span className="text-xs text-slate-400">
             Showing {filteredMatches.length} of {matches.length} job{matches.length === 1 ? "" : "s"}
-            {pdfOnlyFilter && " (PDFs only)"}
+            {pdfOnlyFilter && remoteOnlyFilter
+              ? " (PDFs + Remote)"
+              : pdfOnlyFilter
+              ? " (PDFs only)"
+              : remoteOnlyFilter
+              ? " (Remote only)"
+              : ""}
           </span>
         </div>
 
