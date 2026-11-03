@@ -196,7 +196,6 @@ export function JobMatchFeed({
   const [customUrl, setCustomUrl] = useState("");
   const [queueMessage, setQueueMessage] = useState<string | null>(null);
   const [batchMaxJobs, setBatchMaxJobs] = useState<number>(10);
-  const [discoveryNotice, setDiscoveryNotice] = useState<string | null>(null);
   const [runningDiscovery, setRunningDiscovery] = useState(false);
   const [selectedJobIds, setSelectedJobIds] = useState<string[]>([]);
   const [collapsedMatchIds, setCollapsedMatchIds] = useState<string[]>([]);
@@ -292,11 +291,9 @@ export function JobMatchFeed({
 
           if (completedCount > 0) {
             const msg = `✓ Local worker finished processing (${completedCount} role(s) ready)! Feed refreshed.`;
-            setDiscoveryNotice(msg);
             addToast(msg, "success", "tailor-job");
           } else if (failedCount > 0) {
             const msg = `Task finished with an error. Check local worker logs.`;
-            setDiscoveryNotice(msg);
             addToast(msg, "error", "tailor-job");
           }
         }
@@ -403,7 +400,6 @@ export function JobMatchFeed({
     if (readOnly) return;
     try {
       setRunningDiscovery(true);
-      setDiscoveryNotice(`Enqueuing batch job discovery scrape (up to ${batchMaxJobs} jobs)...`);
       let newTaskId: string | null = null;
       if (onRunBatchDiscovery) {
         const res = await onRunBatchDiscovery(batchMaxJobs);
@@ -428,7 +424,6 @@ export function JobMatchFeed({
         setTrackedTaskIds((prev) => Array.from(new Set([...prev, newTaskId!])));
       }
       const noticeMsg = `Discovery scrape queued (max ${batchMaxJobs} jobs)! Local worker is evaluating roles; feed will auto-refresh on completion.`;
-      setDiscoveryNotice(noticeMsg);
       addToast(noticeMsg, "loading", "batch-discovery");
     } finally {
       setRunningDiscovery(false);
@@ -498,7 +493,6 @@ export function JobMatchFeed({
         await onDeleteMatches(matchIds);
       }
       const deleteMsg = `Deleted ${matchIds.length} job card(s) and purged associated PDFs from storage.`;
-      setDiscoveryNotice(deleteMsg);
       addToast(deleteMsg, "info");
     } finally {
       setDeletingMatches(false);
@@ -509,9 +503,6 @@ export function JobMatchFeed({
     if (readOnly || jobIds.length === 0) return;
     try {
       setTailoringBatch(true);
-      setDiscoveryNotice(
-        `Enqueuing ${jobIds.length} selected role(s) for Resume & Cover Letter PDF generation...`
-      );
       const newIds: string[] = [];
       if (onBatchTailorJobs) {
         const res = await onBatchTailorJobs(jobIds);
@@ -541,7 +532,6 @@ export function JobMatchFeed({
       setQueuedTailorJobIds((prev) => Array.from(new Set([...prev, ...jobIds])));
       setSelectedJobIds((prev) => prev.filter((id) => !jobIds.includes(id)));
       const tailorMsg = `Queued ${jobIds.length} role(s) for 1-page Typst Resume & Cover Letter compilation! Feed will auto-refresh as your worker completes them.`;
-      setDiscoveryNotice(tailorMsg);
       addToast(tailorMsg, "loading", "tailor-job");
     } finally {
       setTailoringBatch(false);
@@ -622,18 +612,6 @@ export function JobMatchFeed({
               + Submit Job URL to Worker Queue
             </button>
           </div>
-        </div>
-      )}
-
-      {discoveryNotice && (
-        <div className="bg-emerald-950/60 border border-emerald-800/80 text-emerald-300 rounded-xl px-4 py-3 text-xs flex items-center justify-between gap-3">
-          <span>{discoveryNotice}</span>
-          <button
-            onClick={() => setDiscoveryNotice(null)}
-            className="text-emerald-400 hover:text-white font-semibold"
-          >
-            ✕
-          </button>
         </div>
       )}
 

@@ -424,31 +424,20 @@ export function ProfileEditorClient({
       )}
 
       {statusBanner && (
-        <>
-          <div className="bg-emerald-950/60 border border-emerald-800 rounded-xl p-3 text-xs text-emerald-300 flex items-center justify-between">
-            <span>{statusBanner}</span>
+        <div className="fixed bottom-5 right-5 z-50 max-w-sm w-full pointer-events-none px-3 sm:px-0">
+          <div className="pointer-events-auto flex items-start justify-between gap-3 p-3.5 rounded-xl border border-emerald-700/80 bg-emerald-950/95 text-emerald-200 shadow-2xl backdrop-blur-md animate-in slide-in-from-bottom-3">
+            <div className="flex items-center gap-2.5 text-xs font-medium">
+              <span className="text-emerald-400 font-bold text-sm flex-shrink-0">✓</span>
+              <span className="leading-snug">{statusBanner}</span>
+            </div>
             <button
               onClick={() => setStatusBanner(null)}
-              className="text-emerald-400 hover:text-white text-xs ml-2"
+              className="text-slate-400 hover:text-white text-xs font-bold ml-2 flex-shrink-0"
             >
               ✕
             </button>
           </div>
-          <div className="fixed bottom-5 right-5 z-50 max-w-sm w-full pointer-events-none px-3 sm:px-0">
-            <div className="pointer-events-auto flex items-start justify-between gap-3 p-3.5 rounded-xl border border-emerald-700/80 bg-emerald-950/95 text-emerald-200 shadow-2xl backdrop-blur-md animate-in slide-in-from-bottom-3">
-              <div className="flex items-center gap-2.5 text-xs font-medium">
-                <span className="text-emerald-400 font-bold text-sm flex-shrink-0">✓</span>
-                <span className="leading-snug">{statusBanner}</span>
-              </div>
-              <button
-                onClick={() => setStatusBanner(null)}
-                className="text-slate-400 hover:text-white text-xs font-bold ml-2 flex-shrink-0"
-              >
-                ✕
-              </button>
-            </div>
-          </div>
-        </>
+        </div>
       )}
 
       {/* 1. Resume PDF / DOCX Ingestion */}
