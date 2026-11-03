@@ -75,6 +75,71 @@ function formatJobSource(rawSource?: string | null): {
   }
 }
 
+export function formatLocationAndPostedDate(
+  rawLocation?: string | null,
+  createdAt?: string | Date | null
+): {
+  locationDisplay: string;
+  postedDisplay: string | null;
+} {
+  const loc = (rawLocation || "").trim();
+  const postedMatch = /(?:•\s*|\s+)?Posted\s+(\d{4})-(\d{2})-(\d{2})/i.exec(loc);
+
+  let year: number | null = null;
+  let month: number | null = null;
+  let day: number | null = null;
+  let cleanedLocation = loc;
+
+  if (postedMatch) {
+    year = Number(postedMatch[1]);
+    month = Number(postedMatch[2]);
+    day = Number(postedMatch[3]);
+    cleanedLocation = loc
+      .replace(/(?:•\s*|\s+)?Posted\s+\d{4}-\d{2}-\d{2}/i, "")
+      .replace(/•\s*$/, "")
+      .trim();
+  } else if (createdAt) {
+    const d = new Date(createdAt);
+    if (!isNaN(d.getTime())) {
+      year = d.getFullYear();
+      month = d.getMonth() + 1;
+      day = d.getDate();
+    }
+  }
+
+  let postedDisplay: string | null = null;
+  if (year !== null && month !== null && day !== null) {
+    const mm = String(month).padStart(2, "0");
+    const dd = String(day).padStart(2, "0");
+    const yyyy = String(year);
+    const dateFormatted = `${mm}-${dd}-${yyyy}`;
+
+    const now = new Date();
+    const todayLocal = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const postedLocal = new Date(year, month - 1, day);
+    const diffDays = Math.round(
+      (todayLocal.getTime() - postedLocal.getTime()) / (1000 * 60 * 60 * 24)
+    );
+
+    let relativeText = "today";
+    if (diffDays === 1) {
+      relativeText = "1 day ago";
+    } else if (diffDays > 1 && diffDays < 30) {
+      relativeText = `${diffDays} days ago`;
+    } else if (diffDays >= 30) {
+      const months = Math.floor(diffDays / 30);
+      relativeText = `${months} month${months === 1 ? "" : "s"} ago`;
+    }
+
+    postedDisplay = `Posted ${relativeText} (${dateFormatted})`;
+  }
+
+  return {
+    locationDisplay: cleanedLocation,
+    postedDisplay,
+  };
+}
+
 function isPostedWithinLast24Hours(match: EvaluatedJobMatch): boolean {
   const loc = match.location || "";
   const postedMatch = /Posted\s+(\d{4}-\d{2}-\d{2})/i.exec(loc);
@@ -869,18 +934,39 @@ export function JobMatchFeed({
                       )}
                     </div>
 
-                    {/* Row 3: Location + Original Posting Link */}
-                    <p className="text-xs text-slate-400">
-                      {match.location} &bull;{" "}
-                      <a
-                        href={match.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-indigo-400 hover:underline"
-                      >
-                        View Original Posting &rarr;
-                      </a>
-                    </p>
+                    {/* Row 3: Location + Relative/Formatted Date + Original Posting Link */}
+                    {(() => {
+                      const { locationDisplay, postedDisplay } =
+                        formatLocationAndPostedDate(
+                          match.location,
+                          match.created_at
+                        );
+                      const parts: React.ReactNode[] = [];
+                      if (locationDisplay && locationDisplay !== "N/A") {
+                        parts.push(<span key="loc">{locationDisplay}</span>);
+                      }
+                      if (postedDisplay) {
+                        parts.push(<span key="date">{postedDisplay}</span>);
+                      }
+                      return (
+                        <p className="text-xs text-slate-400 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                          {parts.map((part, idx) => (
+                            <React.Fragment key={idx}>
+                              {part}
+                              <span>&bull;</span>
+                            </React.Fragment>
+                          ))}
+                          <a
+                            href={match.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-indigo-400 hover:underline"
+                          >
+                            View Original Posting &rarr;
+                          </a>
+                        </p>
+                      );
+                    })()}
                   </div>
                 </div>
 
