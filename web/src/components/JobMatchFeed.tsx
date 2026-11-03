@@ -15,6 +15,13 @@ interface JobMatchFeedProps {
 }
 
 const STATUS_OPTIONS: MatchStatus[] = ["NEW_MATCH", "SAVED", "APPLIED", "ARCHIVED"];
+
+const STAGE_LABELS: Record<MatchStatus, string> = {
+  NEW_MATCH: "New Match",
+  SAVED: "Saved",
+  APPLIED: "Applied",
+  ARCHIVED: "Archived",
+};
 const BATCH_SIZE_OPTIONS: number[] = [5, 10, 15, 20, 30];
 
 function formatJobSource(rawSource?: string | null): {
@@ -434,7 +441,7 @@ export function JobMatchFeed({
     setMatches((prev) =>
       prev.map((m) => (m.id === matchId ? { ...m, status: nextStatus } : m))
     );
-    addToast(`Stage updated to ${nextStatus.replace("_", " ")}`, "info");
+    addToast(`Stage updated to ${STAGE_LABELS[nextStatus] || nextStatus}`, "info");
     if (onUpdateStatus) {
       await onUpdateStatus(matchId, nextStatus);
     }
@@ -746,7 +753,7 @@ export function JobMatchFeed({
                     : "bg-slate-800 text-slate-300 hover:bg-slate-700"
                 }`}
               >
-                {status.replace("_", " ")}
+                {STAGE_LABELS[status] || status}
               </button>
             ))}
 
@@ -1110,7 +1117,7 @@ export function JobMatchFeed({
                     >
                       {STATUS_OPTIONS.map((st) => (
                         <option key={st} value={st}>
-                          {st}
+                          {STAGE_LABELS[st] || st}
                         </option>
                       ))}
                     </select>
